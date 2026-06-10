@@ -1,5 +1,17 @@
-# Object file
-*.o
 
-# Ada Library Information
-*.ali
+# Copernicus datasets
+*.zip
+
+# Copernicus configuration file
+.cdsapirc
+
+# NetCDF files
+.nc
+
+# GIS files
+.shp
+.shx
+.dbf
+.prj
+.cpg
+.geojson
