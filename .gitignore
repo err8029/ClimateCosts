@@ -6,12 +6,13 @@
 .cdsapirc
 
 # NetCDF files
-.nc
+*.nc
 
 # GIS files
-.shp
-.shx
-.dbf
-.prj
-.cpg
-.geojson
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.geojson
+*.gpkg
