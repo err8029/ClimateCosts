@@ -16,3 +16,9 @@
 *.cpg
 *.geojson
 *.gpkg
+*.sbn
+*.sbx
+*.shp.xml
+
+# Raw hazard datasets (downloaded manually, see README)
+flood_raw/
