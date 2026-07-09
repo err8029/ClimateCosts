@@ -3,11 +3,13 @@ import cdsapi
 # Inicializa el cliente de la API (leerá automáticamente tu archivo .cdsapirc)
 c = cdsapi.Client()
 
-# Definir las coordenadas aproximadas de tu Comunidad Autónoma [Norte, Oeste, Sur, Este]
-# Ejemplo para Madrid (puedes ajustarlo exactamente a tu región):
-area_comunidad = [41.2, -4.6, 39.8, -3.0] 
+# Coordenadas [Norte, Oeste, Sur, Este] cubriendo España peninsular y Baleares.
+# Canarias queda fuera de esta caja (distinto huso/CRS) y se trata por separado.
+area_espana = [44.0, -9.5, 36.0, 4.5]
 
-# 1. DESCARGA PARA MORTALIDAD (Temperaturas máximas en 2030)
+# DESCARGA PARA MORTALIDAD POR CALOR (Temperaturas máximas en 2030)
+# El riesgo de inundación y sequía se obtienen de fuentes oficiales (SNCZI, SPEI)
+# en lugar de derivarse de la precipitación de CMIP6 (ver README).
 c.retrieve(
     'projections-cmip6',
     {
@@ -20,28 +22,9 @@ c.retrieve(
         'month': [
             '06', '07', '08', '09'              # Meses de verano en España (riesgo de calor)
         ],
-        'area': area_comunidad,                 # Recorte geográfico para tu comunidad
+        'area': area_espana,                    # Recorte geográfico: España peninsular + Baleares
     },
     'temperaturas_2030.zip'                     # Nombre del archivo de salida
 )
 
-# 2. DESCARGA PARA INUNDACIONES (Precipitaciones extremas en 2030)
-c.retrieve(
-    'projections-cmip6',
-    {
-        'format': 'zip',
-        'temporal_resolution': 'daily',         # Para evaluar litros por metro cuadrado en 24h
-        'experiment': 'ssp2_4_5',
-        'variable': 'precipitation',            # Precipitación acumulada diaria
-        'model': 'gfdl_esm4',
-        'year': '2030',
-        'month': [
-            '01', '02', '03', '04', '05', '06',
-            '07', '08', '09', '10', '11', '12'  # Año completo para buscar DANAs o borrascas
-        ],
-        'area': area_comunidad,
-    },
-    'precipitaciones_2030.zip'
-)
-
-print("Descargas completadas con éxito.")
+print("Descarga completada con éxito.")
