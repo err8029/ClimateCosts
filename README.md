@@ -4,7 +4,7 @@ Modeling the impact of climate change — heat, flooding, wildfire, and drought 
 
 ## Status
 
-Work in progress, scaling up from an initial Comunidad de Madrid pilot to national coverage. Currently implemented: nationwide heat-mortality risk (Heat Index from temperature + humidity, weighted by population, across 2 years × 2 emissions scenarios) and flood risk (population affected by return-period flood zones), plus a Streamlit map viewer (`App.py`). Wildfire and drought indicators are planned next; see [Next steps](#next-steps).
+Work in progress, scaling up from an initial Comunidad de Madrid pilot to national coverage. Currently implemented: nationwide heat-mortality risk (Heat Index from temperature + humidity, weighted by population, across 2 years × 2 emissions scenarios) and flood risk (population affected by return-period flood zones), plus a multi-page Streamlit app (`App.py` + `pages/`) with a sidebar-navigable page per hazard and a combined multi-layer view. Wildfire and drought indicators are planned next; see [Next steps](#next-steps).
 
 ## Approach
 
@@ -23,8 +23,15 @@ Each hazard is a self-contained folder with its own scripts, raw downloads, gene
 
 ```
 ClimateCosts/
-├── App.py                    # Streamlit map viewer (reads from heat/output/)
-├── test_app.py                # pytest suite for App.py
+├── App.py                    # Streamlit entry point: st.navigation router only
+├── common.py                  # Shared map-building/caching helpers used by pages/*.py
+├── pages/
+│   ├── heat.py                 # Heat-mortality risk page
+│   ├── flood.py                 # Flood risk page
+│   ├── drought.py                # Placeholder ("not implemented yet")
+│   ├── wildfire.py                # Placeholder ("not implemented yet")
+│   └── combined.py                 # Multi-hazard overlay (toggleable layers)
+├── test_app.py                # pytest suite for the whole app
 ├── shared/
 │   └── boundaries/            # National municipal boundary shapefile (CNIG), shared by every hazard
 ├── heat/
@@ -36,7 +43,7 @@ ClimateCosts/
 ├── flood/
 │   ├── 3_flood_risk.py
 │   ├── input/                  # Raw SNCZI shapefiles (t10/t100/t500)
-│   ├── output/                 # municipios_inundacion.geojson
+│   ├── output/                 # municipios_inundacion(.geojson|_lite.geojson)
 │   └── QGIS/
 ├── drought/                    # input/, output/, QGIS/ — not implemented yet
 └── wildfire/                   # input/, output/, QGIS/ — not implemented yet
@@ -76,21 +83,37 @@ Output: `heat/output/municipios_heatwave_risk_{año}_{escenario}.geojson` (full,
 - ~33 small coastal municipalities (Basque/Cantabria coast, Ibiza) and North African exclaves (Melilla, Chafarinas, Alhucemas, Vélez de la Gomera) have no temperature value: the EURO-CORDEX grid masks out ocean cells, and these municipalities' polygons — and their nearest grid point — fall on masked cells. Not a bug, just outside this dataset's land coverage.
 - ~88 polygons in the CNIG boundary set are "Comunidades de Villa y Tierra" / mancomunidades (historic communal land-management entities), not real inhabited municipalities, so they have no INE population figure and are left with a null `heat_mortality_risk`. This is expected, not a bug.
 
-### `App.py` — Interactive map (Streamlit)
-A Streamlit + leafmap viewer showing **two side-by-side maps** — 2030 (left) and 2050 (right) — for the lite geojsons, with **Escenario (SSP/RCP)** and **Variable** dropdowns (variable = riesgo de mortalidad por calor, índice de calor diurno, or índice de calor nocturno). The color scale (`vmin`/`vmax`) is fixed per variable across both years and both scenarios (not recomputed per view), so color is visually comparable when switching selections — mixing scales across variables wouldn't make sense, since `heat_mortality_risk` is 0–1 while the Heat Index columns are in °C. Municipalities with a null value (see known limitations above) render gray instead of crashing the colormap.
-
-Below the maps, two tables: **top 10 municipalities by 2030→2050 increment** for the selected scenario/variable, and **top 10 Spanish cities by population** (fixed list — Madrid, Barcelona, València, Zaragoza, Sevilla, Málaga, Murcia, Palma, Alacant/Alicante, Bilbao, ranked by 2025 population — the ranking is stable enough not to need recomputing per year/scenario) showing the same variable's 2030/2050 values and increment, since a city might not show up in the "biggest increment" list even though it matters more in absolute terms. Both are joined by `ine_code`, not name: 17 municipality names repeat nationally (e.g. two different "Mieres"), so a name-only join would silently merge unrelated municipalities.
-
-Run with `streamlit run App.py` (or `python -m streamlit run App.py` if the `streamlit` command isn't on your PATH).
-
 ### 3. `flood/3_flood_risk.py` — Flood risk by municipality
 Loads three MITECO SNCZI "riesgo de población" shapefiles (Peninsula + Balearics, return periods T=10/100/500 years). These already come with per-municipality attributes (`NUM_AFE_MU` = people affected, `N_HAB_MUNI` = reference population), so no geometric overlay is needed — just an attribute join by municipality code. For each return period, computes `flood_risk_tXX` (fraction of the municipality's reference population in a flood-risk zone, clipped to [0, 1]) and `flood_risk_tXX_poblacion_afectada` (raw affected-population count).
 
-Output: `flood/output/municipios_inundacion.geojson`.
+Output: `flood/output/municipios_inundacion.geojson` (full) and `flood/output/municipios_inundacion_lite.geojson` (just the 3 `flood_risk_tXX` columns + simplified geometry, same rationale as the heat lite files — `pages/flood.py` loads this one).
 
 Requires the three SNCZI shapefiles extracted under `flood/input/t10/`, `flood/input/t100/`, `flood/input/t500/` (see [Getting the flood data](#getting-the-flood-data)).
 
 **Known limitation**: `N_HAB_MUNI` is MITECO's own reference population from the SNCZI study (not the current INE figure used elsewhere in this project), so `flood_risk_tXX` fractions are internally consistent within the flood dataset but not on exactly the same population vintage as `heat_mortality_risk`.
+
+## `App.py` + `pages/` — Interactive multi-page viewer (Streamlit)
+
+A multi-page Streamlit app with a sidebar navigation menu — `App.py` is just a thin router (`st.set_page_config` + `st.navigation`); each hazard is its own page under `pages/`:
+
+- **`pages/heat.py`** — the heat-mortality view: two side-by-side maps (2030 left, 2050 right) with **Escenario (SSP/RCP)** and **Variable** dropdowns (riesgo de mortalidad por calor / índice de calor diurno / índice de calor nocturno), plus the two summary tables (top 10 increments, top 10 cities) described below.
+- **`pages/flood.py`** — a single map with a **Periodo de retorno** dropdown (10/100/500 years) and a top-10-municipalities-by-risk table.
+- **`pages/drought.py`**, **`pages/wildfire.py`** — placeholders (`st.info`) until those hazards are implemented.
+- **`pages/combined.py`** — one map overlaying heat and flood risk as separate toggleable layers (Folium layer control), so both can be compared spatially. Drought/wildfire will be added here once implemented; no blended/composite score is computed — "combined" means overlaid layers, not a fabricated single number mixing risks that are on different scales and don't share a common unit.
+
+The color scale (`vmin`/`vmax`) for the heat page is fixed per variable across both years and both scenarios (not recomputed per view), so color is visually comparable when switching selections — mixing scales across variables wouldn't make sense, since `heat_mortality_risk` is 0–1 while the Heat Index columns are in °C. Municipalities with a null value (see known limitations above) render gray instead of crashing the colormap.
+
+The two heat-page tables: **top 10 municipalities by 2030→2050 increment** for the selected scenario/variable, and **top 10 Spanish cities by population** (fixed list — Madrid, Barcelona, València, Zaragoza, Sevilla, Málaga, Murcia, Palma, Alacant/Alicante, Bilbao, ranked by 2025 population — the ranking is stable enough not to need recomputing per year/scenario) showing the same variable's 2030/2050 values and increment, since a city might not show up in the "biggest increment" list even though it matters more in absolute terms. Both are joined by `ine_code`, not name: 17 municipality names repeat nationally (e.g. two different "Mieres"), so a name-only join would silently merge unrelated municipalities.
+
+Run with `streamlit run App.py` (or `python -m streamlit run App.py` if the `streamlit` command isn't on your PATH).
+
+### Performance
+
+Loading and rendering a national choropleth of ~8,100 municipalities is the slow part of this app, not fetching data. Two things keep it fast, both in `common.py`:
+- **Precomputed colors.** Coloring by calling `branca`'s colormap once per feature inside Folium's per-feature `style_function` callback is the single biggest cost (measured: ~3.5s vs ~0.04s for the same 8,132 municipalities). Instead, the hex color for every municipality is computed once, vectorized, as a DataFrame column *before* handing the GeoDataFrame to Folium — the callback then just looks up a precomputed string.
+- **`st.cache_resource` on the built map.** Building a Folium map (styling + serializing ~8,100 polygons to embedded GeoJSON) is expensive regardless of styling approach; re-rendering it identically every time Streamlit reruns the script (which happens on *every* widget interaction, even unrelated ones) would waste that cost repeatedly. Caching the constructed map object per `(archivo, columna, vmin, vmax, ...)` means switching back to an already-seen combination is close to instant. Measured: ~17s cold, ~4s once cached (the residual ~4s is Streamlit's own script re-execution plus recomputing the tables, not map building).
+
+Both the heat and flood app-facing geojsons are also pre-simplified to a 0.001°/~111m geometry tolerance (done once, in the processing scripts, not at app load time) — see the known limitation notes in the pipeline sections above for the ~90% size reduction this gets.
 
 ## Data
 
@@ -100,7 +123,7 @@ Requires the three SNCZI shapefiles extracted under `flood/input/t10/`, `flood/i
 - `heat/input/madrid_buildings.gpkg` — Madrid building footprints (for future building-level cost/exposure analysis; not yet used by any script).
 - `heat/output/municipios_heatwave_risk_{año}_{escenario}.geojson` / `_lite.geojson` — municipalities with the heat-mortality risk indicators attached (full and app-optimized versions), one pair per year×scenario combination.
 - `flood/input/t10/`, `flood/input/t100/`, `flood/input/t500/` — raw SNCZI flood-risk shapefiles, not tracked in git (see [Getting the flood data](#getting-the-flood-data)).
-- `flood/output/municipios_inundacion.geojson` — municipalities with flood risk indicators attached.
+- `flood/output/municipios_inundacion.geojson` / `_lite.geojson` — municipalities with flood risk indicators attached (full and app-optimized versions).
 - `{heat,flood,drought,wildfire}/QGIS/` — QGIS project files for visualizing each hazard.
 
 Large/generated data files, boundary shapefiles, and API credentials are excluded from version control (see `.gitignore`) — they're either downloaded by the scripts above or fetched manually as described below.
@@ -138,7 +161,7 @@ Extract each into `flood/input/t10/`, `flood/input/t100/`, `flood/input/t500/` r
 
 ## Testing
 
-`test_app.py` covers `App.py`: smoke tests (the app renders without exceptions across every scenario×variable combination) and data sanity checks (expected columns, row counts, value ranges, no more nulls than the documented known-limitations count, majority-positive 2030→2050 deltas). Run with:
+`test_app.py` covers the whole app: smoke tests (every page under `pages/` renders without exceptions, navigated to via `AppTest.switch_page()`), detailed checks on the heat page across every scenario×variable combination, and data sanity checks on both hazards' geojsons (expected columns, row counts, value ranges, no more nulls than the documented known-limitations count, majority-positive 2030→2050 heat deltas, flood risk increasing with return period). Run with:
 
 ```
 python -m pytest test_app.py -v

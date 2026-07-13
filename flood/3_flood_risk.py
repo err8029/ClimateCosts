@@ -46,4 +46,13 @@ for columna, ruta in PERIODOS.items():
     municipios[columna + '_poblacion_afectada'] = municipios['ine_code'].map(afectados_por_codigo).fillna(0).astype(int)
 
 municipios.to_file(f"{OUTPUT_DIR}/municipios_inundacion.geojson", driver="GeoJSON")
+
+# Versión ligera para la app, igual que en heat/2_heatwave_risk.py: solo las columnas que se
+# visualizan, con la geometría simplificada (~90% menos peso, sin diferencia visible a escala
+# de mapa nacional/de ciudad).
+columnas_lite = ['NAMEUNIT', 'ine_code', 'flood_risk_t10', 'flood_risk_t100', 'flood_risk_t500', 'geometry']
+municipios_lite = municipios[columnas_lite].copy()
+municipios_lite['geometry'] = municipios_lite.geometry.simplify(0.001, preserve_topology=True)
+municipios_lite.to_file(f"{OUTPUT_DIR}/municipios_inundacion_lite.geojson", driver="GeoJSON")
+
 print("Zonificación de riesgo de inundación finalizada.")
