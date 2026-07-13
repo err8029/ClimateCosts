@@ -152,7 +152,20 @@ def procesar_combinacion(año, escenario):
 
     salida = f"municipios_heatwave_risk_{año}_{escenario}.geojson"
     municipios.to_file(salida, driver="GeoJSON")
-    print(f"Zonificación de riesgo de ola de calor finalizada: {salida}")
+
+    # Versión ligera para la app: solo las columnas que se visualizan, sin los campos
+    # intermedios (temperaturas/humedad crudas, población, metadatos INSPIRE...). Quitar
+    # columnas apenas reduce el peso (la geometría es lo que más pesa), así que además se
+    # simplifica la geometría: a un umbral de 0.001° (~111m) el contorno de cada municipio
+    # sigue viéndose igual de bien a la escala de un mapa nacional/de ciudad, pero el archivo
+    # pesa ~90% menos y la app tarda mucho menos en cargarlo y renderizarlo.
+    columnas_lite = ['NAMEUNIT', 'heat_mortality_risk', 'heat_index_max_c', 'heat_index_min_c', 'geometry']
+    municipios_lite = municipios[columnas_lite].copy()
+    municipios_lite['geometry'] = municipios_lite.geometry.simplify(0.001, preserve_topology=True)
+    salida_lite = f"municipios_heatwave_risk_{año}_{escenario}_lite.geojson"
+    municipios_lite.to_file(salida_lite, driver="GeoJSON")
+
+    print(f"Zonificación de riesgo de ola de calor finalizada: {salida} / {salida_lite}")
 
 
 for escenario in ESCENARIOS:

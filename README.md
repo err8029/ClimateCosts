@@ -37,7 +37,7 @@ Loads the national municipal boundaries (`municipios_espana.shp`, from CNIG) onc
 
 Population comes from INE's official Padrón municipal population table (via the public INE API) and doesn't vary by year/scenario, so it's fetched once and reused across all 4 combinations.
 
-Output: `municipios_heatwave_risk_{año}_{escenario}.geojson`, one per combination (e.g. `municipios_heatwave_risk_2030_rcp4_5.geojson`).
+Output: `municipios_heatwave_risk_{año}_{escenario}.geojson` (full, all columns) and `municipios_heatwave_risk_{año}_{escenario}_lite.geojson` (just `NAMEUNIT` + the 3 columns the app actually displays, with geometry simplified to a 0.001° / ~111m tolerance). The lite version is what `App.py` loads — dropping columns barely changes file size (geometry dominates), but simplifying geometry cuts it by ~90% (134MB → ~15MB) with no visible difference at national/city map zoom levels.
 
 **Known limitations**:
 - `mean_Tmin_Summer`/`humedad_verano_pct` are 30-year-smoothed/seasonal *averages*, not literal tropical-night counts — used as continuous stand-ins for "how tropical the nights are", not a literal tally.
@@ -45,7 +45,7 @@ Output: `municipios_heatwave_risk_{año}_{escenario}.geojson`, one per combinati
 - ~88 polygons in the CNIG boundary set are "Comunidades de Villa y Tierra" / mancomunidades (historic communal land-management entities), not real inhabited municipalities, so they have no INE population figure and are left with a null `heat_mortality_risk`. This is expected, not a bug.
 
 ### `App.py` — Interactive map (Streamlit)
-A Streamlit + leafmap viewer for `municipios_heatwave_risk_{año}_{escenario}.geojson`, with **Año** and **Escenario (SSP/RCP)** dropdowns to switch between the 4 precomputed combinations. The color scale (`vmin`/`vmax`) is fixed across all 4 files (not recomputed per view), so risk color is visually comparable when switching year/scenario. Municipalities with a null `heat_mortality_risk` (see known limitations above) render gray instead of crashing the colormap.
+A Streamlit + leafmap viewer showing **two side-by-side maps** — 2030 (left) and 2050 (right) — for the lite geojsons, with **Escenario (SSP/RCP)** and **Variable** dropdowns (variable = riesgo de mortalidad por calor, índice de calor diurno, or índice de calor nocturno). The color scale (`vmin`/`vmax`) is fixed per variable across both years and both scenarios (not recomputed per view), so color is visually comparable when switching selections — mixing scales across variables wouldn't make sense, since `heat_mortality_risk` is 0–1 while the Heat Index columns are in °C. Municipalities with a null value (see known limitations above) render gray instead of crashing the colormap.
 
 Run with `streamlit run App.py` (or `python -m streamlit run App.py` if the `streamlit` command isn't on your PATH).
 
@@ -63,7 +63,7 @@ Requires the three SNCZI shapefiles extracted under `flood_raw/t10/`, `flood_raw
 - `municipios_espana.*` — national municipal boundary shapefile (CNIG, "Líneas Límite Municipales"), not tracked in git (see [Getting the boundary data](#getting-the-boundary-data)).
 - `summer_max_min_{escenario}.zip` / `sis_temp_raw_{escenario}/` / `temperaturas_{año}_{escenario}_eurocordex.nc` — raw and processed Copernicus EURO-CORDEX temperature download (one raw download per scenario, one processed file per year×scenario).
 - `humedad_{año}_{escenario}.zip` / `cordex_humedad_raw_{año}_{escenario}/` / `humedad_{año}_{escenario}_eurocordex.nc` — raw and processed CORDEX humidity download (one per year×scenario).
-- `municipios_heatwave_risk_{año}_{escenario}.geojson` — municipalities with the heat-mortality risk indicator attached, one per year×scenario combination.
+- `municipios_heatwave_risk_{año}_{escenario}.geojson` / `_lite.geojson` — municipalities with the heat-mortality risk indicators attached (full and app-optimized versions), one pair per year×scenario combination.
 - `flood_raw/t10/`, `flood_raw/t100/`, `flood_raw/t500/` — raw SNCZI flood-risk shapefiles, not tracked in git (see [Getting the flood data](#getting-the-flood-data)).
 - `municipios_inundacion.geojson` — municipalities with flood risk indicators attached.
 - `madrid_buildings.gpkg` — Madrid building footprints (for future building-level cost/exposure analysis).
