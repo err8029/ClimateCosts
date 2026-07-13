@@ -69,6 +69,26 @@ def mapa_municipios(año, escenario, columna, vmin, vmax):
     return m
 
 
+def tabla_top_incrementos(escenario, columna, etiqueta, n=10):
+    # Se cruza por ine_code, no por NAMEUNIT: hay 17 nombres de municipio duplicados a
+    # nivel nacional (p.ej. "Mieres" existe en dos provincias), y cruzar solo por nombre
+    # mezclaría datos de municipios distintos.
+    datos_2030 = cargar_datos(2030, escenario)[['ine_code', 'NAMEUNIT', columna]]
+    datos_2050 = cargar_datos(2050, escenario)[['ine_code', columna]]
+
+    combinado = datos_2030.merge(datos_2050, on='ine_code', suffixes=('_2030', '_2050'))
+    combinado = combinado.dropna(subset=[f'{columna}_2030', f'{columna}_2050'])
+    combinado['incremento'] = combinado[f'{columna}_2050'] - combinado[f'{columna}_2030']
+
+    top = combinado.sort_values('incremento', ascending=False).head(n)
+    return top[['NAMEUNIT', f'{columna}_2030', f'{columna}_2050', 'incremento']].rename(columns={
+        'NAMEUNIT': 'Municipio',
+        f'{columna}_2030': f'{etiqueta} 2030',
+        f'{columna}_2050': f'{etiqueta} 2050',
+        'incremento': 'Incremento',
+    }).round(3).reset_index(drop=True)
+
+
 st.set_page_config(layout="wide")
 st.title("Heat Mortality Risk – Spanish Municipalities")
 
@@ -89,3 +109,6 @@ with mapa_2030:
 with mapa_2050:
     st.subheader("2050")
     mapa_municipios(2050, escenario, columna, vmin, vmax).to_streamlit(height=600)
+
+st.subheader(f"Top 10 mayores incrementos 2030 → 2050 – {etiqueta_variable}")
+st.dataframe(tabla_top_incrementos(escenario, columna, etiqueta_variable), width="stretch")

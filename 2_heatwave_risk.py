@@ -159,7 +159,10 @@ def procesar_combinacion(año, escenario):
     # simplifica la geometría: a un umbral de 0.001° (~111m) el contorno de cada municipio
     # sigue viéndose igual de bien a la escala de un mapa nacional/de ciudad, pero el archivo
     # pesa ~90% menos y la app tarda mucho menos en cargarlo y renderizarlo.
-    columnas_lite = ['NAMEUNIT', 'heat_mortality_risk', 'heat_index_max_c', 'heat_index_min_c', 'geometry']
+    # ine_code (no solo NAMEUNIT) porque hay 17 nombres de municipio duplicados a nivel
+    # nacional (p.ej. "Mieres" existe en dos provincias distintas) - la app lo necesita
+    # como clave de cruce fiable entre años.
+    columnas_lite = ['NAMEUNIT', 'ine_code', 'heat_mortality_risk', 'heat_index_max_c', 'heat_index_min_c', 'geometry']
     municipios_lite = municipios[columnas_lite].copy()
     municipios_lite['geometry'] = municipios_lite.geometry.simplify(0.001, preserve_topology=True)
     salida_lite = f"municipios_heatwave_risk_{año}_{escenario}_lite.geojson"

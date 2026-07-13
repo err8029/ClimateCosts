@@ -47,6 +47,8 @@ Output: `municipios_heatwave_risk_{año}_{escenario}.geojson` (full, all columns
 ### `App.py` — Interactive map (Streamlit)
 A Streamlit + leafmap viewer showing **two side-by-side maps** — 2030 (left) and 2050 (right) — for the lite geojsons, with **Escenario (SSP/RCP)** and **Variable** dropdowns (variable = riesgo de mortalidad por calor, índice de calor diurno, or índice de calor nocturno). The color scale (`vmin`/`vmax`) is fixed per variable across both years and both scenarios (not recomputed per view), so color is visually comparable when switching selections — mixing scales across variables wouldn't make sense, since `heat_mortality_risk` is 0–1 while the Heat Index columns are in °C. Municipalities with a null value (see known limitations above) render gray instead of crashing the colormap.
 
+Below the maps, a table lists the **top 10 municipalities by 2030→2050 increment** for the selected scenario/variable — joined by `ine_code` (not name: 17 municipality names repeat nationally, e.g. two different "Mieres", so a name-only join would silently merge unrelated municipalities).
+
 Run with `streamlit run App.py` (or `python -m streamlit run App.py` if the `streamlit` command isn't on your PATH).
 
 ### 3. `3_flood_risk.py` — Flood risk by municipality
