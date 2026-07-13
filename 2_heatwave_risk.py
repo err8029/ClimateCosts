@@ -1,11 +1,13 @@
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import requests
 import xarray as xr
 import rioxarray # Extensión que permite fusionar xarray con operaciones GIS
 from pyproj import CRS, Transformer
 
 INE_TABLA_PADRON = "29005"  # "Cifras oficiales del padrón por municipio" (INE)
+INE_TABLA_PROYECCION_PROVINCIAL = "36725"  # Proyección de población por provincias, serie 2026-2041 (INE)
 
 # Misma matriz año x escenario que 1_extract_data.py: hay que generar un geojson por
 # combinación para que la app pueda ofrecer los desplegables de año y escenario.
@@ -45,8 +47,8 @@ def indice_calor_c(temp_c, rh):
     return (indice_calor_f(temp_f, rh) - 32) * 5 / 9
 
 
-def normalizar(serie):
-    return (serie - serie.min()) / (serie.max() - serie.min())
+def normalizar(serie, minimo, maximo):
+    return (serie - minimo) / (maximo - minimo)
 
 
 # 1. Cargar el mapa de municipios de toda España (CNIG - líneas límite municipales)
@@ -58,7 +60,8 @@ municipios_base = municipios_base.to_crs(epsg=4326)
 municipios_base['ine_code'] = municipios_base['NATCODE'].str[-5:]
 
 # 2. Obtener población por municipio (INE, Padrón - último año disponible). No depende del
-# año/escenario climático, así que se calcula una sola vez para toda la matriz.
+# año/escenario climático, así que se calcula una sola vez para toda la matriz - su rango de
+# normalización ya es "fijo" por construcción, sin necesidad de tratamiento especial.
 resp = requests.get(
     f"https://servicios.ine.es/wstempus/js/ES/DATOS_TABLA/{INE_TABLA_PADRON}",
     params={"nult": 1, "det": 3, "tip": "AM"},
@@ -75,21 +78,68 @@ for serie in resp.json():
         poblacion_por_municipio[ine_code] = serie['Data'][0]['Valor']
 
 municipios_base['poblacion'] = municipios_base['ine_code'].map(poblacion_por_municipio)
-poblacion_log = np.log1p(municipios_base['poblacion'])
-poblacion_norm = normalizar(poblacion_log)
+
+# 3. Proyectar la población de cada municipio a 2030 y 2050. El INE no publica proyecciones
+# de población por municipio (solo hasta nivel provincia, y solo hasta 2041 - ver README), así
+# que se aplica el factor de crecimiento de cada provincia (INE, tabla 36725) a la población
+# actual de cada uno de sus municipios: el 2030 usa el dato real de la propia tabla, y el 2050
+# extrapola la misma tasa de crecimiento anualizada observada en 2026-2041, otros 9 años más.
+resp_prov = requests.get(
+    f"https://servicios.ine.es/wstempus/js/ES/DATOS_TABLA/{INE_TABLA_PROYECCION_PROVINCIAL}",
+    params={"det": 3, "tip": "AM"},
+    timeout=120,
+)
+resp_prov.raise_for_status()
+poblacion_provincia = {}
+for serie in resp_prov.json():
+    metadata = {m['Variable']['Nombre']: m for m in serie['MetaData']}
+    if metadata.get('Lugar de nacimiento', {}).get('Nombre') != 'Total':
+        continue
+    provincia_meta = metadata.get('Provincias')
+    if provincia_meta is None or not provincia_meta['Codigo']:
+        continue  # descarta la serie "Total Nacional", sin código de provincia
+    codigo_provincia = provincia_meta['Codigo']
+    for punto in serie['Data']:
+        poblacion_provincia.setdefault(codigo_provincia, {})[punto['Anyo']] = punto['Valor']
+
+factor_2030_por_provincia = {}
+factor_2050_por_provincia = {}
+for codigo_provincia, serie_anual in poblacion_provincia.items():
+    base_2026 = serie_anual.get(2026)
+    valor_2030 = serie_anual.get(2030)
+    valor_2041 = serie_anual.get(2041)
+    if base_2026 and valor_2030:
+        factor_2030_por_provincia[codigo_provincia] = valor_2030 / base_2026
+    if base_2026 and valor_2041:
+        tasa_anual = (valor_2041 / base_2026) ** (1 / 15)  # 2026 -> 2041 son 15 años
+        factor_2050_por_provincia[codigo_provincia] = (valor_2041 / base_2026) * (tasa_anual ** 9)  # 2041 -> 2050
+
+municipios_base['codigo_provincia'] = municipios_base['ine_code'].str[:2]
+municipios_base['poblacion_2030'] = municipios_base['poblacion'] * municipios_base['codigo_provincia'].map(factor_2030_por_provincia)
+municipios_base['poblacion_2050'] = municipios_base['poblacion'] * municipios_base['codigo_provincia'].map(factor_2050_por_provincia)
+
+# Igual que con los índices de calor: rango de normalización fijo (de las poblaciones
+# proyectadas a 2030 Y 2050 juntas), para que el crecimiento demográfico entre años también
+# quede reflejado en heat_mortality_risk en vez de anularse por la normalización.
+poblacion_log_por_año = {
+    año: np.log1p(municipios_base[f'poblacion_{año}'])
+    for año in AÑOS
+}
+poblacion_log_global = pd.concat(poblacion_log_por_año.values())
+rango_poblacion = (poblacion_log_global.min(), poblacion_log_global.max())
 
 
-def procesar_combinacion(año, escenario):
+def calcular_indices_climaticos(año, escenario):
     municipios = municipios_base.copy()
 
-    # 3. Abrir el NetCDF de temperaturas EURO-CORDEX de esta combinación año/escenario (ya
+    # 4. Abrir el NetCDF de temperaturas EURO-CORDEX de esta combinación año/escenario (ya
     # recortado a España). Trae la media de verano de la temperatura máxima y de la mínima,
     # ambas en grados Celsius, a ~11km de resolución, en lat/lon normales.
     ds_temp = xr.open_dataset(f"temperaturas_{año}_{escenario}_eurocordex.nc", engine="netcdf4")
     ds_temp = ds_temp.rio.write_crs("EPSG:4326")
     ds_temp = ds_temp.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=True)
 
-    # 4. Abrir el NetCDF de humedad relativa (CORDEX crudo, ver README sobre la inconsistencia
+    # 5. Abrir el NetCDF de humedad relativa (CORDEX crudo, ver README sobre la inconsistencia
     # metodológica de mezclar un único modelo con la media de conjunto de la temperatura).
     # CORDEX usa una malla de "polo rotado" (rlat/rlon), no lat/lon directos, así que hay que
     # reconstruir su proyección a partir de los parámetros guardados en la variable rotated_pole.
@@ -101,7 +151,7 @@ def procesar_combinacion(año, escenario):
     # ya transformados a coordenadas rotadas (rlon/rlat no son lon/lat directos).
     a_rotado = Transformer.from_crs("EPSG:4326", crs_rotado, always_xy=True)
 
-    # 5. Extraer, para cada municipio, la temperatura máxima y mínima media de verano y la
+    # 6. Extraer, para cada municipio, la temperatura máxima y mínima media de verano y la
     # humedad relativa media de verano.
     municipios['temp_max_verano_c'] = 0.0
     municipios['temp_min_verano_c'] = 0.0
@@ -130,25 +180,48 @@ def procesar_combinacion(año, escenario):
             cercano = ds_hum.sel(rlon=rlon, rlat=rlat, method='nearest')
             municipios.at[index, 'humedad_verano_pct'] = float(cercano['hurs'])
 
-    # 6. Índice de calor (temperatura + humedad) para el día (con temp. máxima) y para la
+    # 7. Índice de calor (temperatura + humedad) para el día (con temp. máxima) y para la
     # noche (con temp. mínima, ligado a las "noches tropicales"): a igual temperatura, más
     # humedad hace que el calor se sienta -y afecte al cuerpo- más de lo que indica el
     # termómetro.
     municipios['heat_index_max_c'] = indice_calor_c(municipios['temp_max_verano_c'], municipios['humedad_verano_pct'])
     municipios['heat_index_min_c'] = indice_calor_c(municipios['temp_min_verano_c'], municipios['humedad_verano_pct'])
+    return municipios
 
-    # 7. Indicador de riesgo de mortalidad por calor (proxy relativo, no una predicción real
-    # de muertes). La exposición al calor combina, a partes iguales, el índice de calor
-    # diurno y el nocturno (calor + humedad) - las dos variables climáticas pesan 50%/50%
-    # entre sí. Esa exposición combinada se pondera después a partes iguales con la
-    # población expuesta (en escala logarítmica, muy sesgada: de ~10 a >3M habitantes por
-    # municipio, calculada una sola vez para toda la matriz más arriba), para reflejar
-    # cuánta gente está realmente afectada.
-    heat_index_max_norm = normalizar(municipios['heat_index_max_c'])
-    heat_index_min_norm = normalizar(municipios['heat_index_min_c'])
-    exposicion_norm = (heat_index_max_norm + heat_index_min_norm) / 2
 
-    municipios['heat_mortality_risk'] = (exposicion_norm + poblacion_norm) / 2
+# 8. Calcular los índices climáticos de las 4 combinaciones ANTES de normalizar nada. Así se
+# puede usar un rango de normalización fijo (min/max de las 4 combinaciones juntas) en vez de
+# uno por año: si se normaliza cada año por separado, heat_mortality_risk deja de reflejar el
+# calentamiento real y pasa a reflejar solo la posición relativa dentro de ese año - un
+# municipio puede calentarse en términos absolutos y aun así bajar en el ranking normalizado
+# si el extremo superior de la distribución (con datos de un único modelo de humedad, algo
+# ruidoso) sube más rápido todavía. Ver README.
+resultados = {
+    (año, escenario): calcular_indices_climaticos(año, escenario)
+    for escenario in ESCENARIOS
+    for año in AÑOS
+}
+
+heat_index_max_global = pd.concat([r['heat_index_max_c'] for r in resultados.values()])
+heat_index_min_global = pd.concat([r['heat_index_min_c'] for r in resultados.values()])
+rango_max = (heat_index_max_global.min(), heat_index_max_global.max())
+rango_min = (heat_index_min_global.min(), heat_index_min_global.max())
+
+for (año, escenario), municipios in resultados.items():
+    # 9. Indicador de riesgo de mortalidad por calor (proxy relativo, no una predicción real de
+    # muertes): reparto a partes iguales (33.3% cada una) entre el índice de calor diurno, el
+    # nocturno y la población expuesta (proyectada al año correspondiente, en escala
+    # logarítmica, muy sesgada: de ~10 a >3M habitantes por municipio). Tanto los índices de
+    # calor como la población se normalizan con rangos fijos (calculados arriba, sobre las 4
+    # combinaciones juntas, no por año), para que el indicador sí capture el calentamiento y
+    # el crecimiento demográfico entre 2030 y 2050 en vez de solo el ranking relativo de cada año.
+    heat_index_max_norm = normalizar(municipios['heat_index_max_c'], *rango_max)
+    heat_index_min_norm = normalizar(municipios['heat_index_min_c'], *rango_min)
+    poblacion_norm = normalizar(poblacion_log_por_año[año], *rango_poblacion)
+    municipios['heat_mortality_risk'] = (heat_index_max_norm + heat_index_min_norm + poblacion_norm) / 3
+    # La columna 'poblacion' pasa a reflejar la población proyectada usada en ESTE año, no
+    # siempre la actual (2025/26).
+    municipios['poblacion'] = municipios_base[f'poblacion_{año}']
 
     salida = f"municipios_heatwave_risk_{año}_{escenario}.geojson"
     municipios.to_file(salida, driver="GeoJSON")
@@ -169,8 +242,3 @@ def procesar_combinacion(año, escenario):
     municipios_lite.to_file(salida_lite, driver="GeoJSON")
 
     print(f"Zonificación de riesgo de ola de calor finalizada: {salida} / {salida_lite}")
-
-
-for escenario in ESCENARIOS:
-    for año in AÑOS:
-        procesar_combinacion(año, escenario)
