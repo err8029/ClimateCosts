@@ -120,8 +120,12 @@ def test_flood_renderiza_con_cada_periodo_de_retorno():
     for periodo in ["10 años (frecuente)", "100 años (ocasional)", "500 años (excepcional)"]:
         at.selectbox[0].set_value(periodo).run()
         assert not at.exception, f"{periodo}: {at.exception}"
-        assert len(at.dataframe) == 1
+        assert len(at.dataframe) == 2, "Deberían mostrarse las 2 tablas (top riesgo y proyección 2030-2050)"
         assert len(at.dataframe[0].value) == 10
+        tabla_proyeccion = at.dataframe[1].value
+        assert len(tabla_proyeccion) == 10
+        assert list(tabla_proyeccion.columns) == ['Municipio', 'Afectados 2030', 'Afectados 2050', 'Incremento']
+        assert tabla_proyeccion['Incremento'].is_monotonic_decreasing
 
 
 # --- Comprobaciones directamente sobre los geojson lite (no requieren Streamlit) ---
@@ -146,7 +150,15 @@ def test_geojson_calor_existe_y_tiene_las_columnas_esperadas(año, escenario):
 def test_geojson_inundacion_existe_y_tiene_las_columnas_esperadas():
     assert os.path.exists(RUTA_INUNDACION), f"Falta {RUTA_INUNDACION} - ejecuta flood/3_flood_risk.py"
     gdf = gpd.read_file(RUTA_INUNDACION)
-    for columna in ['NAMEUNIT', 'ine_code', 'flood_risk_t10', 'flood_risk_t100', 'flood_risk_t500', 'geometry']:
+    columnas_esperadas = ['NAMEUNIT', 'ine_code', 'geometry']
+    for periodo in ['t10', 't100', 't500']:
+        columnas_esperadas += [
+            f'flood_risk_{periodo}',
+            f'flood_risk_{periodo}_poblacion_afectada',
+            f'flood_risk_{periodo}_poblacion_afectada_2030',
+            f'flood_risk_{periodo}_poblacion_afectada_2050',
+        ]
+    for columna in columnas_esperadas:
         assert columna in gdf.columns
 
 
@@ -225,3 +237,20 @@ def test_flood_risk_aumenta_con_el_periodo_de_retorno():
     gdf = gpd.read_file(RUTA_INUNDACION)
     assert (gdf['flood_risk_t100'] >= gdf['flood_risk_t10']).mean() > 0.95
     assert (gdf['flood_risk_t500'] >= gdf['flood_risk_t100']).mean() > 0.95
+
+
+@pytest.mark.parametrize("periodo", ['t10', 't100', 't500'])
+def test_poblacion_afectada_2050_mayoritariamente_creciente(periodo):
+    # La zona de inundación es fija; solo la población proyectada varía. La mayoría de
+    # provincias españolas crecen de aquí a 2050 (verificado: ~81-84% de los municipios
+    # afectados en la práctica), pero no todas (p.ej. Zamora, Jaén encogen), así que no
+    # se exige el 100%.
+    gdf = gpd.read_file(RUTA_INUNDACION)
+    columna_2030 = f'flood_risk_{periodo}_poblacion_afectada_2030'
+    columna_2050 = f'flood_risk_{periodo}_poblacion_afectada_2050'
+    afectados = gdf[gdf[columna_2030] > 0]
+    fraccion_creciente = (afectados[columna_2050] >= afectados[columna_2030]).mean()
+    assert fraccion_creciente > 0.75, (
+        f"{periodo}: solo el {fraccion_creciente:.0%} de los municipios afectados muestra "
+        f"población proyectada creciente 2030->2050 (se esperaba >75%)"
+    )

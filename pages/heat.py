@@ -1,6 +1,10 @@
 import streamlit as st
 
-from common import cargar_geojson, rango_columna, construir_mapa
+from common import cargar_geojson, rango_columna, construir_mapa, load_header_title, load_logo
+
+# Execute the header styling at the start of the script layout loop
+load_header_title()
+load_logo()
 
 AÑOS = [2030, 2050]
 ESCENARIOS = {"RCP4.5": "rcp4_5", "RCP8.5": "rcp8_5"}

@@ -86,18 +86,22 @@ Output: `heat/output/municipios_heatwave_risk_{año}_{escenario}.geojson` (full,
 ### 3. `flood/3_flood_risk.py` — Flood risk by municipality
 Loads three MITECO SNCZI "riesgo de población" shapefiles (Peninsula + Balearics, return periods T=10/100/500 years). These already come with per-municipality attributes (`NUM_AFE_MU` = people affected, `N_HAB_MUNI` = reference population), so no geometric overlay is needed — just an attribute join by municipality code. For each return period, computes `flood_risk_tXX` (fraction of the municipality's reference population in a flood-risk zone, clipped to [0, 1]) and `flood_risk_tXX_poblacion_afectada` (raw affected-population count).
 
-Output: `flood/output/municipios_inundacion.geojson` (full) and `flood/output/municipios_inundacion_lite.geojson` (just the 3 `flood_risk_tXX` columns + simplified geometry, same rationale as the heat lite files — `pages/flood.py` loads this one).
+**2030/2050 population projection.** Spain has no official future flood-extent maps — SNCZI's zones are fixed present-day hazard geography, not climate-projected. So rather than projecting the flood zones themselves (not possible with available data), this projects *how many people* would be exposed to that same fixed physical risk: the same INE provincial growth-factor approach used for heat (real 2030 figures, 2050 extrapolated from the 2026–2041 trend) is applied directly to each return period's affected-population count, giving `flood_risk_tXX_poblacion_afectada_2030` and `_2050`. The `flood_risk_tXX` fraction itself is left unprojected/unchanged, since it's the fixed hazard geography, not the demographic exposure to it.
+
+Output: `flood/output/municipios_inundacion.geojson` (full) and `flood/output/municipios_inundacion_lite.geojson` (the `flood_risk_tXX` + affected-population columns, current and projected, + simplified geometry, same rationale as the heat lite files — `pages/flood.py` loads this one).
 
 Requires the three SNCZI shapefiles extracted under `flood/input/t10/`, `flood/input/t100/`, `flood/input/t500/` (see [Getting the flood data](#getting-the-flood-data)).
 
-**Known limitation**: `N_HAB_MUNI` is MITECO's own reference population from the SNCZI study (not the current INE figure used elsewhere in this project), so `flood_risk_tXX` fractions are internally consistent within the flood dataset but not on exactly the same population vintage as `heat_mortality_risk`.
+**Known limitations**:
+- `N_HAB_MUNI` is MITECO's own reference population from the SNCZI study (not the current INE figure used elsewhere in this project), so `flood_risk_tXX` fractions are internally consistent within the flood dataset but not on exactly the same population vintage as `heat_mortality_risk`.
+- The population projection assumes the affected fraction of each municipality stays constant over time (only the municipality's total population changes) — it does not model migration within a municipality towards or away from the flood-prone area specifically.
 
 ## `App.py` + `pages/` — Interactive multi-page viewer (Streamlit)
 
 A multi-page Streamlit app with a sidebar navigation menu — `App.py` is just a thin router (`st.set_page_config` + `st.navigation`); each hazard is its own page under `pages/`:
 
 - **`pages/heat.py`** — the heat-mortality view: two side-by-side maps (2030 left, 2050 right) with **Escenario (SSP/RCP)** and **Variable** dropdowns (riesgo de mortalidad por calor / índice de calor diurno / índice de calor nocturno), plus the two summary tables (top 10 increments, top 10 cities) described below.
-- **`pages/flood.py`** — a single map with a **Periodo de retorno** dropdown (10/100/500 years) and a top-10-municipalities-by-risk table.
+- **`pages/flood.py`** — a single map with a **Periodo de retorno** dropdown (10/100/500 years), a top-10-municipalities-by-risk table, and a top-10-by-2030→2050-increment table (projected affected population, since the flood zones themselves don't change — see the pipeline section above).
 - **`pages/drought.py`**, **`pages/wildfire.py`** — placeholders (`st.info`) until those hazards are implemented.
 - **`pages/combined.py`** — one map overlaying heat and flood risk as separate toggleable layers (Folium layer control), so both can be compared spatially. Drought/wildfire will be added here once implemented; no blended/composite score is computed — "combined" means overlaid layers, not a fabricated single number mixing risks that are on different scales and don't share a common unit.
 

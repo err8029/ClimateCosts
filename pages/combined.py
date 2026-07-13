@@ -1,6 +1,9 @@
 import streamlit as st
 
-from common import rango_columna, construir_mapa_combinado
+from common import rango_columna, construir_mapa_combinado, load_header_title, load_logo
+
+load_header_title()
+load_logo()
 
 st.title("🗺️ Vista combinada")
 st.caption(
