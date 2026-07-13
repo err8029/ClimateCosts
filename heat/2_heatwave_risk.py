@@ -9,6 +9,12 @@ from pyproj import CRS, Transformer
 INE_TABLA_PADRON = "29005"  # "Cifras oficiales del padrón por municipio" (INE)
 INE_TABLA_PROYECCION_PROVINCIAL = "36725"  # Proyección de población por provincias, serie 2026-2041 (INE)
 
+# Este script (y el resto del proyecto) se ejecuta desde la raíz del repositorio, p.ej.:
+# python heat/2_heatwave_risk.py
+BOUNDARIES_DIR = "shared/boundaries"
+INPUT_DIR = "heat/input"
+OUTPUT_DIR = "heat/output"
+
 # Misma matriz año x escenario que 1_extract_data.py: hay que generar un geojson por
 # combinación para que la app pueda ofrecer los desplegables de año y escenario.
 AÑOS = [2030, 2050]
@@ -52,7 +58,7 @@ def normalizar(serie, minimo, maximo):
 
 
 # 1. Cargar el mapa de municipios de toda España (CNIG - líneas límite municipales)
-municipios_base = gpd.read_file("municipios_espana.shp")
+municipios_base = gpd.read_file(f"{BOUNDARIES_DIR}/municipios_espana.shp")
 # Asegurar que está en coordenadas geográficas estándar (WGS84) para coincidir con Copernicus
 municipios_base = municipios_base.to_crs(epsg=4326)
 
@@ -135,7 +141,7 @@ def calcular_indices_climaticos(año, escenario):
     # 4. Abrir el NetCDF de temperaturas EURO-CORDEX de esta combinación año/escenario (ya
     # recortado a España). Trae la media de verano de la temperatura máxima y de la mínima,
     # ambas en grados Celsius, a ~11km de resolución, en lat/lon normales.
-    ds_temp = xr.open_dataset(f"temperaturas_{año}_{escenario}_eurocordex.nc", engine="netcdf4")
+    ds_temp = xr.open_dataset(f"{INPUT_DIR}/temperaturas_{año}_{escenario}_eurocordex.nc", engine="netcdf4")
     ds_temp = ds_temp.rio.write_crs("EPSG:4326")
     ds_temp = ds_temp.rio.set_spatial_dims(x_dim="lon", y_dim="lat", inplace=True)
 
@@ -143,7 +149,7 @@ def calcular_indices_climaticos(año, escenario):
     # metodológica de mezclar un único modelo con la media de conjunto de la temperatura).
     # CORDEX usa una malla de "polo rotado" (rlat/rlon), no lat/lon directos, así que hay que
     # reconstruir su proyección a partir de los parámetros guardados en la variable rotated_pole.
-    ds_hum = xr.open_dataset(f"humedad_{año}_{escenario}_eurocordex.nc", engine="netcdf4")
+    ds_hum = xr.open_dataset(f"{INPUT_DIR}/humedad_{año}_{escenario}_eurocordex.nc", engine="netcdf4")
     crs_rotado = CRS.from_cf(ds_hum['rotated_pole'].attrs)
     ds_hum = ds_hum.rio.write_crs(crs_rotado)
     ds_hum = ds_hum.rio.set_spatial_dims(x_dim="rlon", y_dim="rlat", inplace=True)
@@ -223,7 +229,7 @@ for (año, escenario), municipios in resultados.items():
     # siempre la actual (2025/26).
     municipios['poblacion'] = municipios_base[f'poblacion_{año}']
 
-    salida = f"municipios_heatwave_risk_{año}_{escenario}.geojson"
+    salida = f"{OUTPUT_DIR}/municipios_heatwave_risk_{año}_{escenario}.geojson"
     municipios.to_file(salida, driver="GeoJSON")
 
     # Versión ligera para la app: solo las columnas que se visualizan, sin los campos
@@ -238,7 +244,7 @@ for (año, escenario), municipios in resultados.items():
     columnas_lite = ['NAMEUNIT', 'ine_code', 'heat_mortality_risk', 'heat_index_max_c', 'heat_index_min_c', 'geometry']
     municipios_lite = municipios[columnas_lite].copy()
     municipios_lite['geometry'] = municipios_lite.geometry.simplify(0.001, preserve_topology=True)
-    salida_lite = f"municipios_heatwave_risk_{año}_{escenario}_lite.geojson"
+    salida_lite = f"{OUTPUT_DIR}/municipios_heatwave_risk_{año}_{escenario}_lite.geojson"
     municipios_lite.to_file(salida_lite, driver="GeoJSON")
 
     print(f"Zonificación de riesgo de ola de calor finalizada: {salida} / {salida_lite}")

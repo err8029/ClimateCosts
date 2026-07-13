@@ -20,5 +20,6 @@
 *.sbx
 *.shp.xml
 
-# Raw hazard datasets (downloaded manually, see README)
-flood_raw/
+# Python artifacts
+__pycache__/
+.pytest_cache/

@@ -4,6 +4,10 @@ import xarray as xr
 import zipfile
 import os
 
+# Este script (y el resto del proyecto) se ejecuta desde la raíz del repositorio, p.ej.:
+# python heat/1_extract_data.py
+INPUT_DIR = "heat/input"
+
 # Inicializa el cliente de la API (leerá automáticamente tu archivo .cdsapirc)
 c = cdsapi.Client()
 
@@ -42,8 +46,8 @@ def recorte_espana(ds, año):
 
 
 for escenario in ESCENARIOS:
-    zip_name = f'summer_max_min_{escenario}.zip'
-    carpeta = f'sis_temp_raw_{escenario}'
+    zip_name = f'{INPUT_DIR}/summer_max_min_{escenario}.zip'
+    carpeta = f'{INPUT_DIR}/sis_temp_raw_{escenario}'
 
     if not os.path.exists(carpeta):
         c.retrieve(
@@ -68,7 +72,7 @@ for escenario in ESCENARIOS:
 
     for año in AÑOS:
         ds_es = xr.merge([recorte_espana(ds_max, año), recorte_espana(ds_min, año)])
-        ds_es.to_netcdf(f'temperaturas_{año}_{escenario}_eurocordex.nc')
+        ds_es.to_netcdf(f'{INPUT_DIR}/temperaturas_{año}_{escenario}_eurocordex.nc')
 
 # DESCARGA DE HUMEDAD (para el Índice de Calor, que necesita temperatura + humedad)
 #
@@ -82,9 +86,9 @@ for escenario in ESCENARIOS:
 # escenario y área directamente en la petición: una descarga por combinación año x escenario.
 for escenario in ESCENARIOS:
     for año in AÑOS:
-        zip_name = f'humedad_{año}_{escenario}.zip'
-        carpeta = f'cordex_humedad_raw_{año}_{escenario}'
-        salida = f'humedad_{año}_{escenario}_eurocordex.nc'
+        zip_name = f'{INPUT_DIR}/humedad_{año}_{escenario}.zip'
+        carpeta = f'{INPUT_DIR}/cordex_humedad_raw_{año}_{escenario}'
+        salida = f'{INPUT_DIR}/humedad_{año}_{escenario}_eurocordex.nc'
 
         if os.path.exists(salida):
             continue

@@ -14,7 +14,7 @@ VARIABLES = {
 
 
 def ruta_geojson(año, escenario):
-    return f"municipios_heatwave_risk_{año}_{escenario}_lite.geojson"
+    return f"heat/output/municipios_heatwave_risk_{año}_{escenario}_lite.geojson"
 
 
 @st.cache_data
