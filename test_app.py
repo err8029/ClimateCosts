@@ -117,18 +117,19 @@ def test_heat_tabla_top_ciudades_tiene_10_filas_y_madrid_primero(escenario, vari
 def test_flood_renderiza_con_cada_periodo_de_retorno():
     at = _cargar_app()
     at.switch_page("pages/flood.py").run()
+    columnas_esperadas = ['Municipio', 'Afectados 2030', 'Afectados 2050', 'Incremento']
     for periodo in ["10 años (frecuente)", "100 años (ocasional)", "500 años (excepcional)"]:
         at.selectbox[0].set_value(periodo).run()
         assert not at.exception, f"{periodo}: {at.exception}"
-        assert len(at.dataframe) == 2, "Deberían mostrarse las 2 tablas (top 10 2030 y top 10 2050)"
-        tabla_2030 = at.dataframe[0].value
-        tabla_2050 = at.dataframe[1].value
-        assert len(tabla_2030) == 10
-        assert len(tabla_2050) == 10
-        assert list(tabla_2030.columns) == ['Municipio', 'Afectados 2030']
-        assert list(tabla_2050.columns) == ['Municipio', 'Afectados 2050']
-        assert tabla_2030['Afectados 2030'].is_monotonic_decreasing
-        assert tabla_2050['Afectados 2050'].is_monotonic_decreasing
+        assert len(at.dataframe) == 2, "Deberían mostrarse las 2 tablas (top incrementos y top ciudades)"
+        tabla_incrementos = at.dataframe[0].value
+        tabla_ciudades = at.dataframe[1].value
+        assert len(tabla_incrementos) == 10
+        assert len(tabla_ciudades) == 10
+        assert list(tabla_incrementos.columns) == columnas_esperadas
+        assert list(tabla_ciudades.columns) == columnas_esperadas
+        assert tabla_incrementos['Incremento'].is_monotonic_decreasing
+        assert tabla_ciudades['Municipio'].iloc[0] == 'Madrid'  # ciudad más poblada de España
 
 
 # --- Comprobaciones directamente sobre los geojson lite (no requieren Streamlit) ---

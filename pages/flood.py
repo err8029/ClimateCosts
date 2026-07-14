@@ -14,6 +14,10 @@ PERIODOS = {
     "500 años (excepcional)": "flood_risk_t500",
 }
 
+# Mismas 10 ciudades más pobladas de España que en heat.py (mismo razonamiento: la
+# población no depende del hazard, así que se fija la lista en vez de cargarla aquí).
+TOP10_CIUDADES = ['28079', '08019', '46250', '50297', '41091', '29067', '30030', '07040', '03014', '48020']
+
 st.title("🌊 Riesgo de inundación")
 st.caption(
     "Población afectada por zona de riesgo de inundación fluvial (MITECO/SNCZI), por "
@@ -30,31 +34,44 @@ columna_2050 = f"{columna_base}_poblacion_afectada_2050"
 
 # Mismo rango de color en 2030 y 2050, para que se puedan comparar entre sí visualmente
 # (si no, cada mapa reescalaría sus propios colores).
-vmin, vmax = rango_columna((RUTA,), columna_2030)
+vmin_2030, vmax_2030 = rango_columna((RUTA,), columna_2030)
 vmin_2050, vmax_2050 = rango_columna((RUTA,), columna_2050)
-vmin, vmax = min(vmin, vmin_2050), max(vmax, vmax_2050)
+vmin, vmax = min(vmin_2030, vmin_2050), max(vmax_2030, vmax_2050)
 
-gdf = cargar_geojson(RUTA)
+datos = cargar_geojson(RUTA)[['ine_code', 'NAMEUNIT', columna_2030, columna_2050]]
+datos = datos.dropna(subset=[columna_2030, columna_2050])
+datos['incremento'] = datos[columna_2050] - datos[columna_2030]
 
 
-def tabla_top10(columna, etiqueta):
-    top10 = gdf.nlargest(10, columna)[['NAMEUNIT', columna]].rename(columns={
+def formatear_tabla(tabla):
+    return tabla[['NAMEUNIT', columna_2030, columna_2050, 'incremento']].rename(columns={
         'NAMEUNIT': 'Municipio',
-        columna: etiqueta,
+        columna_2030: 'Afectados 2030',
+        columna_2050: 'Afectados 2050',
+        'incremento': 'Incremento',
     }).round(0).reset_index(drop=True)
-    st.dataframe(top10, width="stretch")
 
 
-col_2030, col_2050 = st.columns(2)
+mapa_2030, mapa_2050 = st.columns(2)
 
-with col_2030:
+with mapa_2030:
     st.subheader("2030")
     construir_mapa(RUTA, columna_2030, vmin, vmax, etiqueta=f"{etiqueta_periodo} (2030)").to_streamlit(height=600)
-    st.subheader(f"Top 10 municipios – {etiqueta_periodo}, 2030")
-    tabla_top10(columna_2030, "Afectados 2030")
 
-with col_2050:
+with mapa_2050:
     st.subheader("2050")
     construir_mapa(RUTA, columna_2050, vmin, vmax, etiqueta=f"{etiqueta_periodo} (2050)").to_streamlit(height=600)
-    st.subheader(f"Top 10 municipios – {etiqueta_periodo}, 2050")
-    tabla_top10(columna_2050, "Afectados 2050")
+
+tabla_incrementos, tabla_ciudades = st.columns(2)
+
+with tabla_incrementos:
+    st.subheader(f"Top 10 mayores incrementos – {etiqueta_periodo}")
+    top_incrementos = datos.sort_values('incremento', ascending=False).head(10)
+    st.dataframe(formatear_tabla(top_incrementos), width="stretch")
+
+with tabla_ciudades:
+    st.subheader(f"Top 10 ciudades españolas – {etiqueta_periodo}")
+    ciudades = datos[datos['ine_code'].isin(TOP10_CIUDADES)]
+    # Mismo orden que TOP10_CIUDADES (de mayor a menor población), no alfabético ni por incremento.
+    ciudades = ciudades.set_index('ine_code').loc[TOP10_CIUDADES].reset_index()
+    st.dataframe(formatear_tabla(ciudades), width="stretch")
