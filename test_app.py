@@ -18,6 +18,10 @@ VARIABLES_CALOR = [
     "Índice de calor (día, temp. máxima)",
     "Índice de calor (noche, temp. mínima)",
 ]
+VARIABLES_SEQUIA = [
+    "Duración de la sequía (meses/año)",
+    "Magnitud de la sequía (índice SPI-3)",
+]
 AÑOS = [2030, 2050]
 ESCENARIOS_ARCHIVO = ['rcp4_5', 'rcp8_5']
 
@@ -43,6 +47,20 @@ def _cargar_heat(escenario=None, variable=None):
     # combinación reutilizan la misma ejecución en lugar de relanzarla cada vez.
     at = AppTest.from_file("App.py", default_timeout=180)
     at.run()
+    at.switch_page("pages/heat.py").run()
+    if escenario is not None:
+        at.selectbox[0].set_value(escenario).run()
+    if variable is not None:
+        at.selectbox[1].set_value(variable).run()
+    assert not at.exception, f"La app lanzó una excepción: {at.exception}"
+    return at
+
+
+@functools.lru_cache(maxsize=None)
+def _cargar_drought(escenario=None, variable=None):
+    at = AppTest.from_file("App.py", default_timeout=180)
+    at.run()
+    at.switch_page("pages/drought.py").run()
     if escenario is not None:
         at.selectbox[0].set_value(escenario).run()
     if variable is not None:
@@ -60,11 +78,10 @@ def test_pagina_renderiza_sin_excepciones(pagina):
     assert not at.exception, f"{pagina} lanzó una excepción: {at.exception}"
 
 
-def test_drought_y_wildfire_muestran_aviso_no_implementado():
+def test_wildfire_muestra_aviso_no_implementado():
     at = _cargar_app()
-    for pagina in ["pages/drought.py", "pages/wildfire.py"]:
-        at.switch_page(pagina).run()
-        assert len(at.info) >= 1, f"{pagina} debería mostrar un st.info de 'no implementado'"
+    at.switch_page("pages/wildfire.py").run()
+    assert len(at.info) >= 1, "pages/wildfire.py debería mostrar un st.info de 'no implementado'"
 
 
 # --- Página de calor: mismas comprobaciones que antes, sobre pages/heat.py ---
@@ -112,6 +129,51 @@ def test_heat_tabla_top_ciudades_tiene_10_filas_y_madrid_primero(escenario, vari
     assert tabla_ciudades['Municipio'].iloc[0] == 'Madrid'  # ciudad más poblada de España
 
 
+# --- Página de sequía: misma estructura que la de calor (mapas 2030/2050 + 2 tablas) ---
+
+def test_drought_estado_por_defecto():
+    at = _cargar_drought()
+    assert len(at.selectbox) == 2
+    assert at.selectbox[0].value == "RCP4.5"
+    assert at.selectbox[1].value == "Duración de la sequía (meses/año)"
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS)
+@pytest.mark.parametrize("variable", VARIABLES_SEQUIA)
+def test_drought_renderiza_sin_excepciones(escenario, variable):
+    _cargar_drought(escenario, variable)
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS)
+@pytest.mark.parametrize("variable", VARIABLES_SEQUIA)
+def test_drought_tablas_tienen_las_columnas_esperadas(escenario, variable):
+    at = _cargar_drought(escenario, variable)
+    assert len(at.dataframe) == 2, "Deberían mostrarse las 2 tablas (incrementos y ciudades)"
+    for tabla in at.dataframe:
+        columnas = list(tabla.value.columns)
+        assert columnas[0] == "Municipio"
+        assert columnas[-1] == "Incremento"
+        assert len(columnas) == 4
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS)
+@pytest.mark.parametrize("variable", VARIABLES_SEQUIA)
+def test_drought_tabla_top_incrementos_tiene_10_filas(escenario, variable):
+    at = _cargar_drought(escenario, variable)
+    tabla_incrementos = at.dataframe[0].value
+    assert len(tabla_incrementos) == 10
+    assert tabla_incrementos['Incremento'].is_monotonic_decreasing
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS)
+@pytest.mark.parametrize("variable", VARIABLES_SEQUIA)
+def test_drought_tabla_top_ciudades_tiene_10_filas_y_madrid_primero(escenario, variable):
+    at = _cargar_drought(escenario, variable)
+    tabla_ciudades = at.dataframe[1].value
+    assert len(tabla_ciudades) == 10
+    assert tabla_ciudades['Municipio'].iloc[0] == 'Madrid'  # ciudad más poblada de España
+
+
 # --- Página de inundación ---
 
 def test_flood_renderiza_con_cada_periodo_de_retorno():
@@ -136,6 +198,10 @@ def test_flood_renderiza_con_cada_periodo_de_retorno():
 
 def _ruta_calor(año, escenario):
     return f"heat/output/municipios_heatwave_risk_{año}_{escenario}_lite.geojson"
+
+
+def _ruta_sequia(año, escenario):
+    return f"drought/output/municipios_drought_risk_{año}_{escenario}_lite.geojson"
 
 
 RUTA_INUNDACION = "flood/output/municipios_inundacion_lite.geojson"
@@ -222,6 +288,53 @@ def test_calentamiento_2030_a_2050_es_mayoritariamente_positivo():
             f"{escenario}: solo el {fraccion_positiva:.0%} de los municipios muestra un "
             f"incremento de riesgo 2030->2050 (se esperaba >90%)"
         )
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("año", AÑOS)
+def test_geojson_sequia_existe_y_tiene_las_columnas_esperadas(año, escenario):
+    ruta = _ruta_sequia(año, escenario)
+    assert os.path.exists(ruta), f"Falta {ruta} - ejecuta drought/2_drought_risk.py"
+    gdf = gpd.read_file(ruta)
+    for columna in ['NAMEUNIT', 'ine_code', 'drought_duration_months', 'drought_magnitude', 'geometry']:
+        assert columna in gdf.columns
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("año", AÑOS)
+def test_drought_sin_nulos(año, escenario):
+    # A diferencia del calor (rejilla EURO-CORDEX ~11km que enmascara algo de costa), la
+    # rejilla de sequía (~25km, sis-ecde-climate-indicators) cubre toda España sin huecos.
+    gdf = gpd.read_file(_ruta_sequia(año, escenario))
+    for columna in ['drought_duration_months', 'drought_magnitude']:
+        assert int(gdf[columna].isna().sum()) == 0
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("año", AÑOS)
+def test_drought_duration_en_rango_fisico_razonable(año, escenario):
+    # drought_duration_months es meses/año en sequía: como mucho 12.
+    gdf = gpd.read_file(_ruta_sequia(año, escenario))
+    valores = gdf['drought_duration_months']
+    assert valores.min() >= 0.0
+    assert valores.max() <= 12.0
+
+
+def test_sequia_2030_a_2050_es_mayoritariamente_creciente():
+    # No todos los municipios individuales tienen por qué empeorar (valores anuales
+    # ruidosos incluso tras promediar una ventana de 20 años), pero la gran mayoría sí
+    # debería bajo un escenario de cambio climático (verificado: ~74-88% en la práctica).
+    for escenario in ESCENARIOS_ARCHIVO:
+        g30 = gpd.read_file(_ruta_sequia(2030, escenario)).set_index('ine_code')
+        g50 = gpd.read_file(_ruta_sequia(2050, escenario)).set_index('ine_code')
+        comunes = g30.index.intersection(g50.index)
+        for columna in ['drought_duration_months', 'drought_magnitude']:
+            delta = g50.loc[comunes, columna] - g30.loc[comunes, columna]
+            fraccion_positiva = (delta > 0).mean()
+            assert fraccion_positiva > 0.7, (
+                f"{escenario}/{columna}: solo el {fraccion_positiva:.0%} de los municipios "
+                f"muestra un incremento 2030->2050 (se esperaba >70%)"
+            )
 
 
 @pytest.mark.parametrize("columna", ['flood_risk_t10', 'flood_risk_t100', 'flood_risk_t500'])

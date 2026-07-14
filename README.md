@@ -4,7 +4,7 @@ Modeling the impact of climate change — heat, flooding, wildfire, and drought 
 
 ## Status
 
-Work in progress, scaling up from an initial Comunidad de Madrid pilot to national coverage. Currently implemented: nationwide heat-mortality risk (Heat Index from temperature + humidity, weighted by population, across 2 years × 2 emissions scenarios) and flood risk (population affected by return-period flood zones), plus a multi-page Streamlit app (`App.py` + `pages/`) with a sidebar-navigable page per hazard and a combined multi-layer view. Wildfire and drought indicators are planned next; see [Next steps](#next-steps).
+Work in progress, scaling up from an initial Comunidad de Madrid pilot to national coverage. Currently implemented: nationwide heat-mortality risk (Heat Index from temperature + humidity, weighted by population, across 2 years × 2 emissions scenarios), flood risk (population affected by return-period flood zones, current + projected), and drought risk (meteorological drought duration + magnitude, current + projected), plus a multi-page Streamlit app (`App.py` + `pages/`) with a sidebar-navigable page per hazard and a combined multi-layer view. Wildfire is planned next; see [Next steps](#next-steps).
 
 ## Approach
 
@@ -14,7 +14,7 @@ Each hazard is modeled independently and stored as its own indicator column(s) o
 |---|---|
 | Heat-mortality | Copernicus C3S EURO-CORDEX-derived temperature statistics (max + min) + raw CORDEX humidity (Heat Index) + INE municipal population, projected to 2030/2050 via provincial growth rates |
 | Flood | MITECO SNCZI "riesgo de población" flood-risk maps, T=10/100/500yr return periods |
-| Drought | SPEI Global Drought Monitor (CSIC) *(planned)* |
+| Drought | Copernicus/EEA `sis-ecde-climate-indicators` — meteorological drought duration + magnitude (SPI-3), derived from bias-corrected CORDEX, projected to 2030/2050 |
 | Wildfire | EFFIS historical burnt-area perimeters *(planned)* |
 
 ## Project structure
@@ -28,7 +28,7 @@ ClimateCosts/
 ├── pages/
 │   ├── heat.py                 # Heat-mortality risk page
 │   ├── flood.py                 # Flood risk page
-│   ├── drought.py                # Placeholder ("not implemented yet")
+│   ├── drought.py                # Drought risk page
 │   ├── wildfire.py                # Placeholder ("not implemented yet")
 │   └── combined.py                 # Multi-hazard overlay (toggleable layers)
 ├── test_app.py                # pytest suite for the whole app
@@ -45,7 +45,12 @@ ClimateCosts/
 │   ├── input/                  # Raw SNCZI shapefiles (t10/t100/t500)
 │   ├── output/                 # municipios_inundacion(.geojson|_lite.geojson)
 │   └── QGIS/
-├── drought/                    # input/, output/, QGIS/ — not implemented yet
+├── drought/
+│   ├── 1_extract_data.py       # Downloads sis-ecde-climate-indicators (SPI-3 duration + magnitude)
+│   ├── 2_drought_risk.py       # Computes drought_duration_months / drought_magnitude per municipality
+│   ├── input/                  # Raw CDS downloads (drought_raw_{escenario}/)
+│   ├── output/                 # municipios_drought_risk_{año}_{escenario}(.geojson|_lite.geojson)
+│   └── QGIS/
 └── wildfire/                   # input/, output/, QGIS/ — not implemented yet
 ```
 
@@ -96,14 +101,30 @@ Requires the three SNCZI shapefiles extracted under `flood/input/t10/`, `flood/i
 - `N_HAB_MUNI` is MITECO's own reference population from the SNCZI study (not the current INE figure used elsewhere in this project), so `flood_risk_tXX` fractions are internally consistent within the flood dataset but not on exactly the same population vintage as `heat_mortality_risk`.
 - The population projection assumes the affected fraction of each municipality stays constant over time (only the municipality's total population changes) — it does not model migration within a municipality towards or away from the flood-prone area specifically.
 
+### 4. `drought/1_extract_data.py` + `drought/2_drought_risk.py` — Drought risk by municipality
+
+The official CSIC SPEIbase (SPEI-6/SPEI-12) is historical-only — there's no future/projected version of it, and its download portal (`digital.csic.es`) blocks scripted access. Instead this uses Copernicus's `sis-ecde-climate-indicators` dataset, which provides **duration** (months/year in drought) and **magnitude** (severity) of meteorological drought based on **SPI-3** (3-month Standardised Precipitation Index — precipitation deficit only, *not* SPEI, which also factors in evapotranspiration), derived from bias-corrected CORDEX and covering 1970–2098 under RCP4.5/RCP8.5. This is a genuine tradeoff: an index at a different timescale than originally wanted, in exchange for actual official 2030/2050 projections instead of a from-scratch homemade proxy.
+
+`1_extract_data.py` downloads, per scenario, both variables as one yearly gridded (~0.25°/~25km) NetCDF time series spanning the full period — one download per scenario (2 total), no need to loop by year. The specific GCM/RCM/ensemble-member combination (`hadgem2_es`/`rca4`/`r1i1p1` — same model family as the heat humidity data) isn't freely choosable: only certain pre-computed combinations exist, discovered via the CDS API's `constraints` endpoint (not documented on the dataset's web page).
+
+`2_drought_risk.py` then, per year×scenario: takes a **20-year climatological window average** centered on the target year (2021–2040 for 2030, 2041–2060 for 2050) rather than a single year's value — single-year values are noisy (e.g. Spain-wide mean duration jumped 2.9→1.7→3.2→5.3 months across just 4 individual years in a row in the raw data), the same lesson learned the hard way with heat's per-year normalization bug. Clips the windowed grid to each municipality the same way as the heat script (nearest-point fallback for municipalities smaller than a grid cell — used more often here than for heat, since this grid is ~2× coarser).
+
+Output: `drought/output/municipios_drought_risk_{año}_{escenario}.geojson` (full) and `_lite.geojson` (`drought_duration_months`, `drought_magnitude`, simplified geometry). No combined/blended drought score is computed — same reasoning as flood, two separate official indicators rather than an invented composite.
+
+**Known limitations**:
+- SPI-3 measures precipitation deficit only; it doesn't account for evapotranspiration (temperature-driven water demand), so it will understate drought severity in a warming climate relative to a true SPEI.
+- ~0.25° (~25km) grid resolution is much coarser than heat's ~11km grid, so many neighboring small municipalities share the same underlying grid value — expect visibly "blocky" patterns on the map rather than fine per-municipality gradients.
+- The 20-year window is a modeling choice (not an official CDS aggregation), made to reduce single-year noise; a different window length would shift the exact numbers somewhat, though not the overall trend.
+
 ## `App.py` + `pages/` — Interactive multi-page viewer (Streamlit)
 
 A multi-page Streamlit app with a sidebar navigation menu — `App.py` is just a thin router (`st.set_page_config` + `st.navigation`); each hazard is its own page under `pages/`:
 
 - **`pages/heat.py`** — the heat-mortality view: two side-by-side maps (2030 left, 2050 right) with **Escenario (SSP/RCP)** and **Variable** dropdowns (riesgo de mortalidad por calor / índice de calor diurno / índice de calor nocturno), plus the two summary tables (top 10 increments, top 10 cities) described below.
 - **`pages/flood.py`** — same layout as `pages/heat.py`: a **Periodo de retorno** dropdown (10/100/500 years) driving two side-by-side maps of projected affected population (2030 left, 2050 right — the flood zones themselves don't change, only who lives in them, see the pipeline section above), plus the same two summary tables below (top 10 increments, top 10 cities).
-- **`pages/drought.py`**, **`pages/wildfire.py`** — placeholders (`st.info`) until those hazards are implemented.
-- **`pages/combined.py`** — one map overlaying heat and flood risk as separate toggleable layers (Folium layer control), so both can be compared spatially. Drought/wildfire will be added here once implemented; no blended/composite score is computed — "combined" means overlaid layers, not a fabricated single number mixing risks that are on different scales and don't share a common unit.
+- **`pages/drought.py`** — same layout again: **Escenario (RCP)** and **Variable** dropdowns (duración de la sequía / magnitud de la sequía), two side-by-side maps (2030/2050), plus the same two summary tables below.
+- **`pages/wildfire.py`** — placeholder (`st.info`) until that hazard is implemented.
+- **`pages/combined.py`** — one map overlaying heat, flood, and drought risk as separate toggleable layers (Folium layer control), so all three can be compared spatially. Wildfire will be added here once implemented; no blended/composite score is computed — "combined" means overlaid layers, not a fabricated single number mixing risks that are on different scales and don't share a common unit.
 
 The color scale (`vmin`/`vmax`) for the heat page is fixed per variable across both years and both scenarios (not recomputed per view), so color is visually comparable when switching selections — mixing scales across variables wouldn't make sense, since `heat_mortality_risk` is 0–1 while the Heat Index columns are in °C. Municipalities with a null value (see known limitations above) render gray instead of crashing the colormap.
 
@@ -117,7 +138,7 @@ Loading and rendering a national choropleth of ~8,100 municipalities is the slow
 - **Precomputed colors.** Coloring by calling `branca`'s colormap once per feature inside Folium's per-feature `style_function` callback is the single biggest cost (measured: ~3.5s vs ~0.04s for the same 8,132 municipalities). Instead, the hex color for every municipality is computed once, vectorized, as a DataFrame column *before* handing the GeoDataFrame to Folium — the callback then just looks up a precomputed string.
 - **`st.cache_resource` on the built map.** Building a Folium map (styling + serializing ~8,100 polygons to embedded GeoJSON) is expensive regardless of styling approach; re-rendering it identically every time Streamlit reruns the script (which happens on *every* widget interaction, even unrelated ones) would waste that cost repeatedly. Caching the constructed map object per `(archivo, columna, vmin, vmax, ...)` means switching back to an already-seen combination is close to instant. Measured: ~17s cold, ~4s once cached (the residual ~4s is Streamlit's own script re-execution plus recomputing the tables, not map building).
 
-Both the heat and flood app-facing geojsons are also pre-simplified to a 0.001°/~111m geometry tolerance (done once, in the processing scripts, not at app load time) — see the known limitation notes in the pipeline sections above for the ~90% size reduction this gets.
+The heat, flood, and drought app-facing geojsons are also pre-simplified to a 0.001°/~111m geometry tolerance (done once, in the processing scripts, not at app load time) — see the known limitation notes in the pipeline sections above for the ~90% size reduction this gets.
 
 ## Data
 
@@ -128,6 +149,8 @@ Both the heat and flood app-facing geojsons are also pre-simplified to a 0.001°
 - `heat/output/municipios_heatwave_risk_{año}_{escenario}.geojson` / `_lite.geojson` — municipalities with the heat-mortality risk indicators attached (full and app-optimized versions), one pair per year×scenario combination.
 - `flood/input/t10/`, `flood/input/t100/`, `flood/input/t500/` — raw SNCZI flood-risk shapefiles, not tracked in git (see [Getting the flood data](#getting-the-flood-data)).
 - `flood/output/municipios_inundacion.geojson` / `_lite.geojson` — municipalities with flood risk indicators attached (full and app-optimized versions).
+- `drought/input/drought_{escenario}.zip` / `drought_raw_{escenario}/` — raw Copernicus `sis-ecde-climate-indicators` download (one per scenario, covering the full 1970-2098 time series).
+- `drought/output/municipios_drought_risk_{año}_{escenario}.geojson` / `_lite.geojson` — municipalities with drought duration/magnitude indicators attached, one pair per year×scenario combination.
 - `{heat,flood,drought,wildfire}/QGIS/` — QGIS project files for visualizing each hazard.
 
 Large/generated data files, boundary shapefiles, and API credentials are excluded from version control (see `.gitignore`) — they're either downloaded by the scripts above or fetched manually as described below.
@@ -165,7 +188,7 @@ Extract each into `flood/input/t10/`, `flood/input/t100/`, `flood/input/t500/` r
 
 ## Testing
 
-`test_app.py` covers the whole app: smoke tests (every page under `pages/` renders without exceptions, navigated to via `AppTest.switch_page()`), detailed checks on the heat page across every scenario×variable combination, and data sanity checks on both hazards' geojsons (expected columns, row counts, value ranges, no more nulls than the documented known-limitations count, majority-positive 2030→2050 heat deltas, flood risk increasing with return period). Run with:
+`test_app.py` covers the whole app: smoke tests (every page under `pages/` renders without exceptions, navigated to via `AppTest.switch_page()`), detailed checks on the heat and drought pages across every scenario×variable combination, and data sanity checks on all three implemented hazards' geojsons (expected columns, row counts, value ranges, no more nulls than the documented known-limitations count, majority-positive 2030→2050 heat/drought deltas, flood risk increasing with return period). Run with:
 
 ```
 python -m pytest test_app.py -v
@@ -175,7 +198,6 @@ Each unique scenario/variable combination spins up a real `streamlit.testing.v1.
 
 ## Next steps
 
-- Add drought risk from the SPEI Global Drought Monitor, using the same raster-clip-per-municipality approach as the heat script.
 - Add wildfire risk from EFFIS historical burnt-area data.
 - Merge all hazard indicators into a single national GeoPackage plus a styled QGIS project.
 - Translate hazard indicators into estimated economic costs per municipality.
