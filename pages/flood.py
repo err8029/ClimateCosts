@@ -16,39 +16,45 @@ PERIODOS = {
 
 st.title("🌊 Riesgo de inundación")
 st.caption(
-    "Fracción de la población de cada municipio en zona de riesgo de inundación fluvial "
-    "(MITECO/SNCZI), por periodo de retorno."
+    "Población afectada por zona de riesgo de inundación fluvial (MITECO/SNCZI), por "
+    "periodo de retorno. La zona de inundación en sí no cambia (España no tiene "
+    "proyecciones oficiales de zonas inundables a futuro): lo que varía entre 2030 y "
+    "2050 es cuánta gente viviría expuesta a ese mismo riesgo físico, según la "
+    "proyección de población por provincia (INE)."
 )
 
 etiqueta_periodo = st.selectbox("Periodo de retorno", list(PERIODOS.keys()))
-columna = PERIODOS[etiqueta_periodo]
+columna_base = PERIODOS[etiqueta_periodo]
+columna_2030 = f"{columna_base}_poblacion_afectada_2030"
+columna_2050 = f"{columna_base}_poblacion_afectada_2050"
 
-# Mismo rango de color en los 3 periodos, para que se puedan comparar entre sí visualmente.
-vmin, vmax = rango_columna((RUTA,), columna)
+# Mismo rango de color en 2030 y 2050, para que se puedan comparar entre sí visualmente
+# (si no, cada mapa reescalaría sus propios colores).
+vmin, vmax = rango_columna((RUTA,), columna_2030)
+vmin_2050, vmax_2050 = rango_columna((RUTA,), columna_2050)
+vmin, vmax = min(vmin, vmin_2050), max(vmax, vmax_2050)
 
-construir_mapa(RUTA, columna, vmin, vmax, etiqueta=etiqueta_periodo).to_streamlit(height=650)
-
-st.subheader(f"Top 10 municipios con mayor riesgo – {etiqueta_periodo}")
 gdf = cargar_geojson(RUTA)
-top10 = gdf.nlargest(10, columna)[['NAMEUNIT', columna]].rename(columns={
-    'NAMEUNIT': 'Municipio',
-    columna: 'Fracción de población en riesgo',
-}).round(3).reset_index(drop=True)
-st.dataframe(top10, width="stretch")
 
-st.subheader(f"Población afectada proyectada, 2030 → 2050 – {etiqueta_periodo}")
-st.caption(
-    "La zona de inundación en sí no cambia (España no tiene proyecciones oficiales de "
-    "zonas inundables a futuro): lo que varía es cuánta gente viviría expuesta a ese "
-    "mismo riesgo físico, según la proyección de población por provincia (INE)."
-)
-columna_2030 = f"{columna}_poblacion_afectada_2030"
-columna_2050 = f"{columna}_poblacion_afectada_2050"
-proyeccion = gdf[['NAMEUNIT', columna_2030, columna_2050]].dropna()
-proyeccion['Incremento'] = proyeccion[columna_2050] - proyeccion[columna_2030]
-proyeccion = proyeccion.nlargest(10, 'Incremento').rename(columns={
-    'NAMEUNIT': 'Municipio',
-    columna_2030: 'Afectados 2030',
-    columna_2050: 'Afectados 2050',
-}).round(0).reset_index(drop=True)
-st.dataframe(proyeccion, width="stretch")
+
+def tabla_top10(columna, etiqueta):
+    top10 = gdf.nlargest(10, columna)[['NAMEUNIT', columna]].rename(columns={
+        'NAMEUNIT': 'Municipio',
+        columna: etiqueta,
+    }).round(0).reset_index(drop=True)
+    st.dataframe(top10, width="stretch")
+
+
+col_2030, col_2050 = st.columns(2)
+
+with col_2030:
+    st.subheader("2030")
+    construir_mapa(RUTA, columna_2030, vmin, vmax, etiqueta=f"{etiqueta_periodo} (2030)").to_streamlit(height=600)
+    st.subheader(f"Top 10 municipios – {etiqueta_periodo}, 2030")
+    tabla_top10(columna_2030, "Afectados 2030")
+
+with col_2050:
+    st.subheader("2050")
+    construir_mapa(RUTA, columna_2050, vmin, vmax, etiqueta=f"{etiqueta_periodo} (2050)").to_streamlit(height=600)
+    st.subheader(f"Top 10 municipios – {etiqueta_periodo}, 2050")
+    tabla_top10(columna_2050, "Afectados 2050")

@@ -101,7 +101,7 @@ Requires the three SNCZI shapefiles extracted under `flood/input/t10/`, `flood/i
 A multi-page Streamlit app with a sidebar navigation menu — `App.py` is just a thin router (`st.set_page_config` + `st.navigation`); each hazard is its own page under `pages/`:
 
 - **`pages/heat.py`** — the heat-mortality view: two side-by-side maps (2030 left, 2050 right) with **Escenario (SSP/RCP)** and **Variable** dropdowns (riesgo de mortalidad por calor / índice de calor diurno / índice de calor nocturno), plus the two summary tables (top 10 increments, top 10 cities) described below.
-- **`pages/flood.py`** — a single map with a **Periodo de retorno** dropdown (10/100/500 years), a top-10-municipalities-by-risk table, and a top-10-by-2030→2050-increment table (projected affected population, since the flood zones themselves don't change — see the pipeline section above).
+- **`pages/flood.py`** — a **Periodo de retorno** dropdown (10/100/500 years) driving two side-by-side maps of projected affected population (2030 left, 2050 right — the flood zones themselves don't change, only who lives in them, see the pipeline section above), each with its own top-10-municipalities table directly beneath it.
 - **`pages/drought.py`**, **`pages/wildfire.py`** — placeholders (`st.info`) until those hazards are implemented.
 - **`pages/combined.py`** — one map overlaying heat and flood risk as separate toggleable layers (Folium layer control), so both can be compared spatially. Drought/wildfire will be added here once implemented; no blended/composite score is computed — "combined" means overlaid layers, not a fabricated single number mixing risks that are on different scales and don't share a common unit.
 

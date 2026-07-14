@@ -120,12 +120,15 @@ def test_flood_renderiza_con_cada_periodo_de_retorno():
     for periodo in ["10 años (frecuente)", "100 años (ocasional)", "500 años (excepcional)"]:
         at.selectbox[0].set_value(periodo).run()
         assert not at.exception, f"{periodo}: {at.exception}"
-        assert len(at.dataframe) == 2, "Deberían mostrarse las 2 tablas (top riesgo y proyección 2030-2050)"
-        assert len(at.dataframe[0].value) == 10
-        tabla_proyeccion = at.dataframe[1].value
-        assert len(tabla_proyeccion) == 10
-        assert list(tabla_proyeccion.columns) == ['Municipio', 'Afectados 2030', 'Afectados 2050', 'Incremento']
-        assert tabla_proyeccion['Incremento'].is_monotonic_decreasing
+        assert len(at.dataframe) == 2, "Deberían mostrarse las 2 tablas (top 10 2030 y top 10 2050)"
+        tabla_2030 = at.dataframe[0].value
+        tabla_2050 = at.dataframe[1].value
+        assert len(tabla_2030) == 10
+        assert len(tabla_2050) == 10
+        assert list(tabla_2030.columns) == ['Municipio', 'Afectados 2030']
+        assert list(tabla_2050.columns) == ['Municipio', 'Afectados 2050']
+        assert tabla_2030['Afectados 2030'].is_monotonic_decreasing
+        assert tabla_2050['Afectados 2050'].is_monotonic_decreasing
 
 
 # --- Comprobaciones directamente sobre los geojson lite (no requieren Streamlit) ---
