@@ -4,7 +4,7 @@ Modeling the impact of climate change — heat, flooding, wildfire, and drought 
 
 ## Status
 
-Work in progress, scaling up from an initial Comunidad de Madrid pilot to national coverage. Currently implemented: nationwide heat-mortality risk (Heat Index from temperature + humidity, weighted by population, across 2 years × 2 emissions scenarios), flood risk (population affected by return-period flood zones, current + projected), and drought risk (meteorological drought duration + magnitude, current + projected), plus a multi-page Streamlit app (`App.py` + `pages/`) with a sidebar-navigable page per hazard and a combined multi-layer view. Wildfire is planned next; see [Next steps](#next-steps).
+Work in progress, scaling up from an initial Comunidad de Madrid pilot to national coverage. Currently implemented: nationwide heat-mortality risk (Heat Index from temperature + humidity, weighted by population, across 2 years × 2 emissions scenarios), flood risk (MITECO population exposure, current + projected, plus a separate Copernicus-derived projected river discharge intensity indicator under RCP4.5/8.5), and drought risk (meteorological drought duration + magnitude, current + projected), plus a multi-page Streamlit app (`App.py` + `pages/`) with a sidebar-navigable page per hazard and a combined multi-layer view. Wildfire is planned next; see [Next steps](#next-steps).
 
 ## Approach
 
@@ -13,7 +13,7 @@ Each hazard is modeled independently and stored as its own indicator column(s) o
 | Hazard | Source |
 |---|---|
 | Heat-mortality | Copernicus C3S EURO-CORDEX-derived temperature statistics (max + min) + raw CORDEX humidity (Heat Index) + INE municipal population, projected to 2030/2050 via provincial growth rates |
-| Flood | MITECO SNCZI "riesgo de población" flood-risk maps, T=10/100/500yr return periods |
+| Flood | MITECO SNCZI "riesgo de población" flood-risk maps (T=10/100/500yr) for population exposure + Copernicus/EEA `sis-ecde-climate-indicators` (`flood_recurrence`) for projected river discharge intensity (1-in-2/5/10/50yr, RCP4.5/8.5) |
 | Drought | Copernicus/EEA `sis-ecde-climate-indicators` — meteorological drought duration + magnitude (SPI-3), derived from bias-corrected CORDEX, projected to 2030/2050 |
 | Wildfire | EFFIS historical burnt-area perimeters *(planned)* |
 
@@ -42,8 +42,10 @@ ClimateCosts/
 │   └── QGIS/
 ├── flood/
 │   ├── 3_flood_risk.py
-│   ├── input/                  # Raw SNCZI shapefiles (t10/t100/t500)
-│   ├── output/                 # municipios_inundacion(.geojson|_lite.geojson)
+│   ├── 4_extract_discharge_data.py  # Downloads sis-ecde-climate-indicators (flood_recurrence)
+│   ├── 5_river_discharge_risk.py    # Computes river_discharge_{2y,5y,10y,50y} per municipality
+│   ├── input/                  # Raw SNCZI shapefiles (t10/t100/t500) + discharge_raw_{periodo}_{escenario}/
+│   ├── output/                 # municipios_inundacion(...) + municipios_river_discharge_{epoca}_{escenario}(...)
 │   └── QGIS/
 ├── drought/
 │   ├── 1_extract_data.py       # Downloads sis-ecde-climate-indicators (SPI-3 duration + magnitude)
@@ -101,7 +103,24 @@ Requires the three SNCZI shapefiles extracted under `flood/input/t10/`, `flood/i
 - `N_HAB_MUNI` is MITECO's own reference population from the SNCZI study (not the current INE figure used elsewhere in this project), so `flood_risk_tXX` fractions are internally consistent within the flood dataset but not on exactly the same population vintage as `heat_mortality_risk`.
 - The population projection assumes the affected fraction of each municipality stays constant over time (only the municipality's total population changes) — it does not model migration within a municipality towards or away from the flood-prone area specifically.
 
-### 4. `drought/1_extract_data.py` + `drought/2_drought_risk.py` — Drought risk by municipality
+### 4. `flood/4_extract_discharge_data.py` + `flood/5_river_discharge_risk.py` — Projected river discharge intensity
+
+MITECO's SNCZI data (above) has no climate-scenario dimension at all — it's a fixed present-day hazard map. To get an actual RCP-scenario-driven flood signal, this uses the same `sis-ecde-climate-indicators` dataset as drought, this time its **`flood_recurrence`** variable: river discharge (m³/s) expected for a given return period, from two hydrological models (E-HYPE, VIC-WUR) forced by bias-corrected CORDEX, under RCP4.5/RCP8.5.
+
+This is a **genuinely different indicator from the MITECO data above, not a replacement for it** — river discharge intensity tells you how much a river's flood-generating flow is projected to change, not how many people live in a flood-prone area. The two are shown as separate sections on `pages/flood.py` rather than merged into one number, same reasoning as keeping every hazard as its own column instead of a blended score. The return periods don't line up either: Copernicus offers 1-in-2/5/10/50-year, MITECO offers T=10/100/500-year — different studies, not interchangeable.
+
+`4_extract_discharge_data.py` downloads, per scenario × return period (8 combinations), one small NetCDF that already contains **3 fixed 30-year climatological windows** (~2011–2040, ~2041–2070, ~2071–2100) rather than a yearly time series — Copernicus did the climatological averaging already, unlike the drought indicators. The GCM/RCM/ensemble/hydrological-model combination (`hadgem2_es`/`rca4`/`r1i1p1`/`combined_e_hype_and_vic_wur`) was again found via the `constraints` endpoint.
+
+`5_river_discharge_risk.py` clips each municipality against the **first two** of those three windows (labeled by their real period, e.g. `2011_2040`, `2041_2070` — not relabeled to "2030"/"2050", since a 30-year window centered elsewhere would be misleading under those names). Unlike every other raster-clip in this project, it takes the **maximum** value within the municipality, not the mean: discharge is only meaningful on grid cells that sit on a watercourse (~36% of Spain's grid cells are NaN — no channel there), so averaging in the non-river cells would dilute the signal toward zero everywhere. A municipality with no significant watercourse inside it, or nearby via the nearest-point fallback, is left **null**, not zero — a missing channel isn't the same claim as "zero flood risk".
+
+Output: `flood/output/municipios_river_discharge_{epoca}_{escenario}.geojson` / `_lite.geojson`, columns `river_discharge_2y`/`_5y`/`_10y`/`_50y`.
+
+**Known limitations**:
+- Only ~64% of Spain's grid cells have a value at all (the rest have no significant modeled watercourse) — expect many null municipalities, concentrated in areas far from rivers.
+- The 3 available windows are fixed by Copernicus, not chosen by this project; using the first two as a "near/mid-century" comparison pair means skipping the ~2071–2100 window entirely to keep the same two-map layout used everywhere else in the app.
+- `flood_recurrence` measures the same hazard-defining discharge across the whole country with one model chain — it hasn't been calibrated against the specific rivers behind MITECO's Spanish flood maps, so the two indicators are not on a comparable scale or methodology, only complementary in spirit.
+
+### 5. `drought/1_extract_data.py` + `drought/2_drought_risk.py` — Drought risk by municipality
 
 The official CSIC SPEIbase (SPEI-6/SPEI-12) is historical-only — there's no future/projected version of it, and its download portal (`digital.csic.es`) blocks scripted access. Instead this uses Copernicus's `sis-ecde-climate-indicators` dataset, which provides **duration** (months/year in drought) and **magnitude** (severity) of meteorological drought based on **SPI-3** (3-month Standardised Precipitation Index — precipitation deficit only, *not* SPEI, which also factors in evapotranspiration), derived from bias-corrected CORDEX and covering 1970–2098 under RCP4.5/RCP8.5. This is a genuine tradeoff: an index at a different timescale than originally wanted, in exchange for actual official 2030/2050 projections instead of a from-scratch homemade proxy.
 
@@ -121,7 +140,7 @@ Output: `drought/output/municipios_drought_risk_{año}_{escenario}.geojson` (ful
 A multi-page Streamlit app with a sidebar navigation menu — `App.py` is just a thin router (`st.set_page_config` + `st.navigation`); each hazard is its own page under `pages/`:
 
 - **`pages/heat.py`** — the heat-mortality view: two side-by-side maps (2030 left, 2050 right) with **Escenario (SSP/RCP)** and **Variable** dropdowns (riesgo de mortalidad por calor / índice de calor diurno / índice de calor nocturno), plus the two summary tables (top 10 increments, top 10 cities) described below.
-- **`pages/flood.py`** — same layout as `pages/heat.py`: a **Periodo de retorno** dropdown (10/100/500 years) driving two side-by-side maps of projected affected population (2030 left, 2050 right — the flood zones themselves don't change, only who lives in them, see the pipeline section above), plus the same two summary tables below (top 10 increments, top 10 cities).
+- **`pages/flood.py`** — two stacked sections, since flood risk comes from two genuinely different sources (see the pipeline sections above). First, MITECO population exposure: a **Periodo de retorno** dropdown (10/100/500 years) driving two side-by-side maps of projected affected population (2030 left, 2050 right — the flood zones themselves don't change, only who lives in them), plus the same two summary tables below (top 10 increments, top 10 cities). Below that, projected river discharge intensity: **Escenario (RCP)** and **Periodo de retorno** dropdowns (2/5/10/50 years) driving two side-by-side maps of projected discharge for the two available climatological windows (`2011_2040`/`2041_2070`), plus the same two summary tables.
 - **`pages/drought.py`** — same layout again: **Escenario (RCP)** and **Variable** dropdowns (duración de la sequía / magnitud de la sequía), two side-by-side maps (2030/2050), plus the same two summary tables below.
 - **`pages/wildfire.py`** — placeholder (`st.info`) until that hazard is implemented.
 - **`pages/combined.py`** — one map overlaying heat, flood, and drought risk as separate toggleable layers (Folium layer control), so all three can be compared spatially. Wildfire will be added here once implemented; no blended/composite score is computed — "combined" means overlaid layers, not a fabricated single number mixing risks that are on different scales and don't share a common unit.
@@ -149,6 +168,8 @@ The heat, flood, and drought app-facing geojsons are also pre-simplified to a 0.
 - `heat/output/municipios_heatwave_risk_{año}_{escenario}.geojson` / `_lite.geojson` — municipalities with the heat-mortality risk indicators attached (full and app-optimized versions), one pair per year×scenario combination.
 - `flood/input/t10/`, `flood/input/t100/`, `flood/input/t500/` — raw SNCZI flood-risk shapefiles, not tracked in git (see [Getting the flood data](#getting-the-flood-data)).
 - `flood/output/municipios_inundacion.geojson` / `_lite.geojson` — municipalities with flood risk indicators attached (full and app-optimized versions).
+- `flood/input/discharge_{periodo}_{escenario}.zip` / `discharge_raw_{periodo}_{escenario}/` — raw Copernicus `sis-ecde-climate-indicators` (`flood_recurrence`) download, one per return-period×scenario combination (8 total).
+- `flood/output/municipios_river_discharge_{epoca}_{escenario}.geojson` / `_lite.geojson` — municipalities with projected river discharge indicators attached, one pair per climatological-window×scenario combination.
 - `drought/input/drought_{escenario}.zip` / `drought_raw_{escenario}/` — raw Copernicus `sis-ecde-climate-indicators` download (one per scenario, covering the full 1970-2098 time series).
 - `drought/output/municipios_drought_risk_{año}_{escenario}.geojson` / `_lite.geojson` — municipalities with drought duration/magnitude indicators attached, one pair per year×scenario combination.
 - `{heat,flood,drought,wildfire}/QGIS/` — QGIS project files for visualizing each hazard.
@@ -188,7 +209,7 @@ Extract each into `flood/input/t10/`, `flood/input/t100/`, `flood/input/t500/` r
 
 ## Testing
 
-`test_app.py` covers the whole app: smoke tests (every page under `pages/` renders without exceptions, navigated to via `AppTest.switch_page()`), detailed checks on the heat and drought pages across every scenario×variable combination, and data sanity checks on all three implemented hazards' geojsons (expected columns, row counts, value ranges, no more nulls than the documented known-limitations count, majority-positive 2030→2050 heat/drought deltas, flood risk increasing with return period). Run with:
+`test_app.py` covers the whole app: smoke tests (every page under `pages/` renders without exceptions, navigated to via `AppTest.switch_page()`), detailed checks on the heat and drought pages across every scenario×variable combination and on flood's river-discharge section across every scenario×return-period combination, and data sanity checks on every hazard's geojsons (expected columns, row counts, value ranges, no more nulls than the documented known-limitations count, majority-positive 2030→2050 heat/drought deltas, flood/discharge risk increasing with return period). Run with:
 
 ```
 python -m pytest test_app.py -v

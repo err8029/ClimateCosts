@@ -64,6 +64,24 @@ def tabla_top_ciudades(escenario, columna, etiqueta):
 
 st.title("🌡️ Riesgo de mortalidad por calor")
 
+
+# Replace 20px with whatever font size you need
+st.markdown('<p style="font-size: 17px; color: #808080;">Riesgo de mortalidad debido al calor en periodo estival, se utilizan datos de temperatura máxima, mínima y humedad relativa con los que se calculan indices de calor, finalmente se tiene en cuenta la población expuesta por municipio. Todas estas variables se calculan a partir de proyecciones de temperatura y humedad relativa para los escenarios RCP4.5 y RCP8.5, y para los años 2030 y 2050.</p>', unsafe_allow_html=True)
+
+st.divider()  # 👈 Draws a horizontal rule
+
+# Remove whitespace from the top of the page and sidebar
+st.markdown("""
+        <style>
+               .block-container {
+                    padding-top: 1rem;
+                    padding-bottom: 0rem;
+                    padding-left: 5rem;
+                    padding-right: 5rem;
+                }
+        </style>
+        """, unsafe_allow_html=True)
+
 columna_escenario, columna_variable = st.columns(2)
 etiqueta_escenario = columna_escenario.selectbox("Escenario (SSP/RCP)", list(ESCENARIOS.keys()))
 escenario = ESCENARIOS[etiqueta_escenario]

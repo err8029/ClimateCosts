@@ -54,14 +54,22 @@ def tabla_top_ciudades(escenario, columna, etiqueta):
 
 
 st.title("🌵 Riesgo de sequía")
-st.caption(
-    "Duración (meses/año en sequía) y magnitud (severidad, índice SPI-3) de la sequía "
-    "meteorológica, según sis-ecde-climate-indicators (Copernicus/EEA), derivado de CORDEX. "
-    "SPI-3 mide solo el déficit de precipitación (no la evapotranspiración, a diferencia del "
-    "SPEI del resto de fuentes de sequía), ver README. Cada valor es la media de una ventana "
-    "climatológica de 20 años centrada en el año objetivo (2021-2040 para 2030, 2041-2060 "
-    "para 2050), no el dato de un año suelto (muy ruidoso año a año)."
-)
+st.markdown('<p style="font-size: 17px; color: #808080;">Duración (meses/año en sequía) y magnitud (severidad, índice SPI-3) de la sequía meteorológica, según sis-ecde-climate-indicators (Copernicus/EEA), derivado de CORDEX. SPI-3 mide solo el déficit de precipitación (no la evapotranspiración, a diferencia del SPEI del resto de fuentes de sequía), ver README. Cada valor es la media de una ventana climatológica de 20 años centrada en el año objetivo (2021-2040 para 2030, 2041-2060 para 2050), no el dato de un año suelto (muy ruidoso año a año).</p>', unsafe_allow_html=True)
+
+st.divider()  # 👈 Draws a horizontal rule
+
+
+# Remove whitespace from the top of the page and sidebar
+st.markdown("""
+        <style>
+               .block-container {
+                    padding-top: 1rem;
+                    padding-bottom: 0rem;
+                    padding-left: 5rem;
+                    padding-right: 5rem;
+                }
+        </style>
+        """, unsafe_allow_html=True)
 
 columna_escenario, columna_variable = st.columns(2)
 etiqueta_escenario = columna_escenario.selectbox("Escenario (RCP)", list(ESCENARIOS.keys()))

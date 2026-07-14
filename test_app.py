@@ -183,7 +183,7 @@ def test_flood_renderiza_con_cada_periodo_de_retorno():
     for periodo in ["10 años (frecuente)", "100 años (ocasional)", "500 años (excepcional)"]:
         at.selectbox[0].set_value(periodo).run()
         assert not at.exception, f"{periodo}: {at.exception}"
-        assert len(at.dataframe) == 2, "Deberían mostrarse las 2 tablas (top incrementos y top ciudades)"
+        assert len(at.dataframe) == 4, "2 tablas MITECO (incrementos/ciudades) + 2 de caudal fluvial"
         tabla_incrementos = at.dataframe[0].value
         tabla_ciudades = at.dataframe[1].value
         assert len(tabla_incrementos) == 10
@@ -192,6 +192,29 @@ def test_flood_renderiza_con_cada_periodo_de_retorno():
         assert list(tabla_ciudades.columns) == columnas_esperadas
         assert tabla_incrementos['Incremento'].is_monotonic_decreasing
         assert tabla_ciudades['Municipio'].iloc[0] == 'Madrid'  # ciudad más poblada de España
+
+
+def test_flood_caudal_renderiza_con_cada_escenario_y_periodo():
+    at = _cargar_app()
+    at.switch_page("pages/flood.py").run()
+    for escenario in ["RCP4.5", "RCP8.5"]:
+        at.selectbox[1].set_value(escenario).run()
+        for periodo in ["2 años", "5 años", "10 años", "50 años"]:
+            at.selectbox[2].set_value(periodo).run()
+            assert not at.exception, f"{escenario}/{periodo}: {at.exception}"
+            assert len(at.dataframe) == 4
+            tabla_incrementos = at.dataframe[2].value
+            tabla_ciudades = at.dataframe[3].value
+            assert len(tabla_incrementos) == 10
+            # Las 10 ciudades más grandes tienen cauce cercano en todos los combos probados,
+            # pero no se exige aquí de forma estricta: un municipio sin cauce significativo
+            # se omite (null), no se rellena con 0 (ver README, Known limitations).
+            assert len(tabla_ciudades) == 10
+            for tabla in (tabla_incrementos, tabla_ciudades):
+                assert list(tabla.columns)[0] == 'Municipio'
+                assert list(tabla.columns)[-1] == 'Incremento'
+                assert len(tabla.columns) == 4
+            assert tabla_incrementos['Incremento'].is_monotonic_decreasing
 
 
 # --- Comprobaciones directamente sobre los geojson lite (no requieren Streamlit) ---
@@ -205,6 +228,12 @@ def _ruta_sequia(año, escenario):
 
 
 RUTA_INUNDACION = "flood/output/municipios_inundacion_lite.geojson"
+
+EPOCAS_CAUDAL = ['2011_2040', '2041_2070']
+
+
+def _ruta_caudal(epoca, escenario):
+    return f"flood/output/municipios_river_discharge_{epoca}_{escenario}_lite.geojson"
 
 
 @pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
@@ -371,3 +400,45 @@ def test_poblacion_afectada_2050_mayoritariamente_creciente(periodo):
         f"{periodo}: solo el {fraccion_creciente:.0%} de los municipios afectados muestra "
         f"población proyectada creciente 2030->2050 (se esperaba >75%)"
     )
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("epoca", EPOCAS_CAUDAL)
+def test_geojson_caudal_existe_y_tiene_las_columnas_esperadas(epoca, escenario):
+    ruta = _ruta_caudal(epoca, escenario)
+    assert os.path.exists(ruta), f"Falta {ruta} - ejecuta flood/5_river_discharge_risk.py"
+    gdf = gpd.read_file(ruta)
+    for columna in ['NAMEUNIT', 'ine_code', 'river_discharge_2y', 'river_discharge_5y', 'river_discharge_10y', 'river_discharge_50y', 'geometry']:
+        assert columna in gdf.columns
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("epoca", EPOCAS_CAUDAL)
+def test_caudal_nulos_dentro_de_lo_esperado(epoca, escenario):
+    # Municipios sin cauce significativo dentro (ni cerca de su centroide): ~84 en la
+    # práctica, de ~8100. Un número muy por encima indicaría una regresión real.
+    gdf = gpd.read_file(_ruta_caudal(epoca, escenario))
+    for columna in ['river_discharge_2y', 'river_discharge_5y', 'river_discharge_10y', 'river_discharge_50y']:
+        nulos = int(gdf[columna].isna().sum())
+        assert nulos <= 150, f"{epoca}/{escenario}/{columna}: {nulos} municipios sin dato (se esperaban <=150)"
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("epoca", EPOCAS_CAUDAL)
+def test_caudal_no_negativo(epoca, escenario):
+    gdf = gpd.read_file(_ruta_caudal(epoca, escenario))
+    for columna in ['river_discharge_2y', 'river_discharge_5y', 'river_discharge_10y', 'river_discharge_50y']:
+        valores = gdf[columna].dropna()
+        assert valores.min() >= 0.0
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("epoca", EPOCAS_CAUDAL)
+def test_caudal_aumenta_con_el_periodo_de_retorno(epoca, escenario):
+    # Igual que con flood_risk_tXX: a igual municipio, un periodo de retorno más raro
+    # (50 años) debería implicar un caudal máximo mayor o igual que uno más frecuente
+    # (2 años) - no se exige el 100%, solo la gran mayoría.
+    gdf = gpd.read_file(_ruta_caudal(epoca, escenario))
+    assert (gdf['river_discharge_5y'] >= gdf['river_discharge_2y']).mean() > 0.95
+    assert (gdf['river_discharge_10y'] >= gdf['river_discharge_5y']).mean() > 0.95
+    assert (gdf['river_discharge_50y'] >= gdf['river_discharge_10y']).mean() > 0.95
