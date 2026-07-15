@@ -37,12 +37,15 @@ def formatear_tabla(datos):
 
 st.title("🗺️ Riesgo combinado")
 st.caption(
-    "Combina los 4 riesgos (calor, inundación, sequía, incendio) a partes iguales "
-    "(25% cada uno) en un único indicador por municipio. Cada hazard aporta una variable "
-    "representativa normalizada 0-1 con un rango propio (no reutiliza directamente los "
-    "números mostrados en la página de cada hazard) - ver README. Solo se calcula donde "
-    "los 4 componentes tienen dato: los municipios sin alguno (sobre todo por el hueco "
-    "costero de incendio, ver su página) quedan sin riesgo combinado."
+    "Combina los 4 riesgos (calor, inundación, sequía, incendio) en un único indicador "
+    "por municipio, ponderado por hazard (calor 40%, inundación 30%, sequía e incendio "
+    "15% cada uno - los mismos pesos que usa el impacto financiero, ver su página y el "
+    "README para las fuentes). Es una suma ponderada, no un producto: que un componente "
+    "sea 0 no anula el resto. Cada hazard aporta una variable representativa normalizada "
+    "0-1 con un rango propio (no reutiliza directamente los números mostrados en la "
+    "página de cada hazard) - ver README. Solo se calcula donde los 4 componentes tienen "
+    "dato: los municipios sin alguno (sobre todo por el hueco costero de incendio, ver su "
+    "página) quedan sin riesgo combinado."
 )
 
 etiqueta_escenario = st.selectbox("Escenario (RCP)", list(ESCENARIOS.keys()))

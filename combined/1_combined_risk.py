@@ -4,17 +4,33 @@ import pandas as pd
 # Este script (y el resto del proyecto) se ejecuta desde la raíz del repositorio, p.ej.:
 # python combined/1_combined_risk.py
 #
-# Combina los 4 riesgos (calor, inundación, sequía, incendio) a partes iguales (25% cada
-# uno) en un único indicador combined_risk por municipio/año/escenario. Cada hazard aporta
-# UNA variable representativa, normalizada 0-1 con un rango propio y fijo calculado aquí
-# mismo (no reutiliza directamente los rangos de normalización de heat_mortality_risk/
-# wildfire_risk, aunque ya sean 0-1, para que los 4 componentes queden en un espacio de
-# normalización autocontenido y coherente entre sí - decisión explícita del usuario).
+# Combina los 4 riesgos (calor, inundación, sequía, incendio) en un único indicador
+# combined_risk por municipio/año/escenario. Cada hazard aporta UNA variable representativa,
+# normalizada 0-1 con un rango propio y fijo calculado aquí mismo (no reutiliza directamente
+# los rangos de normalización de heat_mortality_risk/wildfire_risk, aunque ya sean 0-1, para
+# que los 4 componentes queden en un espacio de normalización autocontenido y coherente
+# entre sí - decisión explícita del usuario).
+#
+# Los pesos (40% calor / 30% inundación / 15% sequía / 15% incendio) son los mismos, y por
+# el mismo motivo, que los usados para financial_impact_eur (ver 2_financial_impact.py):
+# combined_risk YA es esa media ponderada, así que financial_impact_eur simplemente la
+# reutiliza (valor_economico_eur x combined_risk) en vez de recalcularla por su cuenta - una
+# sola fuente de verdad para los pesos. Es una SUMA ponderada (no un producto): que un
+# componente sea 0 (o falte) no anula el resto, solo reduce su parte proporcional.
 BOUNDARIES_DIR = "shared/boundaries"
 OUTPUT_DIR = "combined/output"
 
 AÑOS = [2030, 2050]
 ESCENARIOS = ['rcp4_5', 'rcp8_5']
+
+# Ver README, sección "Financial impact proxy" para las fuentes (JRC PESETA IV, pérdidas
+# agregadas EM-DAT/Banco de España-Mannheim) y las limitaciones de estos pesos.
+PESOS_HAZARD = {
+    'calor_norm': 0.40,
+    'inundacion_norm': 0.30,
+    'sequia_norm': 0.15,
+    'incendio_norm': 0.15,
+}
 
 
 def normalizar(serie, minimo, maximo):
@@ -78,11 +94,18 @@ for (año, escenario), tabla in resultados.items():
     ) / 2
     tabla['incendio_norm'] = tabla['wildfire_risk']
 
-    componentes = ['calor_norm', 'inundacion_norm', 'sequia_norm', 'incendio_norm']
-    # Solo se calcula combined_risk donde los 4 componentes tienen dato: promediar solo
-    # los disponibles daría una falsa sensación de "25% cada uno" cuando en realidad
-    # faltaría alguno (ver Known limitations, README).
-    tabla['combined_risk'] = tabla[componentes].mean(axis=1, skipna=False)
+    componentes = list(PESOS_HAZARD.keys())
+    # Suma ponderada, no un producto: que un componente sea 0 no anula el resto. Si a un
+    # municipio le falta ALGÚN componente (el caso más común: el hueco costero de
+    # wildfire_risk, ver su página), se recalculan los pesos SOLO entre los componentes
+    # disponibles para que sigan sumando 1, en vez de dejar combined_risk en blanco - así
+    # un municipio con 3 de 4 componentes sigue teniendo un riesgo combinado, no un hueco.
+    # Solo queda nulo si le faltan los 4 (no debería ocurrir en la práctica).
+    valores = tabla[componentes]
+    pesos = pd.Series(PESOS_HAZARD)
+    pesos_disponibles = valores.notna().mul(pesos, axis=1)
+    suma_pesos_disponibles = pesos_disponibles.sum(axis=1)
+    tabla['combined_risk'] = valores.fillna(0).mul(pesos, axis=1).sum(axis=1) / suma_pesos_disponibles
 
     salida = f"{OUTPUT_DIR}/municipios_combined_risk_{año}_{escenario}.geojson"
     tabla.to_file(salida, driver="GeoJSON")

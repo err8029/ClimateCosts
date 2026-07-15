@@ -2,6 +2,7 @@
 sí misma - Streamlit solo convierte en página los ficheros pasados explícitamente a
 st.Page() en App.py, así que este módulo no aparece en el menú de navegación."""
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 import streamlit as st
 import leafmap.foliumap as leafmap
@@ -54,17 +55,30 @@ def rango_columna(rutas, columna):
     return float(valores.min()), float(valores.max())
 
 
-def agregar_capa(m, ruta, columna, vmin, vmax, etiqueta=None, mostrar=True):
-    """Añade una capa coloreada por `columna` a un mapa Folium ya existente `m`."""
+def agregar_capa(m, ruta, columna, vmin, vmax, etiqueta=None, mostrar=True, escala_log=False):
+    """Añade una capa coloreada por `columna` a un mapa Folium ya existente `m`.
+
+    `escala_log`: para variables con cola muy larga (p.ej. impacto financiero total, donde
+    Madrid/Barcelona son órdenes de magnitud mayores que la mayoría de municipios), colorear
+    en escala lineal deja casi todo el país en un único color y solo un puñado de ciudades
+    grandes visibles - la escala logarítmica (log1p, seguro con valores 0) reparte el
+    contraste de forma mucho más legible. Los ticks de la leyenda quedan en espacio log1p,
+    no en € directos, así que se avisa en el caption."""
     gdf = cargar_geojson(ruta).copy()
 
-    colormap = LinearColormap(colors=['blue', 'green', 'yellow', 'orange', 'red'], vmin=vmin, vmax=vmax)
-    colormap.caption = etiqueta or columna
+    valores = gdf[columna]
+    vmin_colormap, vmax_colormap = vmin, vmax
+    if escala_log:
+        valores = np.log1p(valores)
+        vmin_colormap, vmax_colormap = np.log1p(vmin), np.log1p(vmax)
+
+    colormap = LinearColormap(colors=['blue', 'green', 'yellow', 'orange', 'red'], vmin=vmin_colormap, vmax=vmax_colormap)
+    colormap.caption = f"{etiqueta or columna} (escala log)" if escala_log else (etiqueta or columna)
 
     # Precalcular el color de cada municipio de una vez (aquí, con pandas) en vez de que
     # el style_function de folium llame a colormap() por cada una de las ~8000
     # geometrías al renderizar: es la optimización que más tiempo ahorra.
-    gdf['color_hex'] = gdf[columna].apply(lambda v: colormap(v) if pd.notna(v) else '#808080')
+    gdf['color_hex'] = valores.apply(lambda v: colormap(v) if pd.notna(v) else '#808080')
 
     def style_function(feature):
         return {
@@ -86,14 +100,14 @@ def agregar_capa(m, ruta, columna, vmin, vmax, etiqueta=None, mostrar=True):
 
 
 @st.cache_resource
-def construir_mapa(ruta, columna, vmin, vmax, etiqueta=None, centro=CENTRO_ESPAÑA, zoom=ZOOM_ESPAÑA):
+def construir_mapa(ruta, columna, vmin, vmax, etiqueta=None, centro=CENTRO_ESPAÑA, zoom=ZOOM_ESPAÑA, escala_log=False):
     """Construye (y cachea) un mapa Folium de una sola capa, coloreada por `columna`.
     Cachear por los argumentos (ruta, columna, vmin, vmax...) evita reconstruir el mapa
     - el paso más lento de la app - cada vez que Streamlit vuelve a ejecutar el script
     tras cualquier interacción del usuario, incluso si ya se había visto exactamente
     esta combinación."""
     m = leafmap.Map(center=list(centro), zoom=zoom)
-    agregar_capa(m, ruta, columna, vmin, vmax, etiqueta=etiqueta)
+    agregar_capa(m, ruta, columna, vmin, vmax, etiqueta=etiqueta, escala_log=escala_log)
     return m
 
 

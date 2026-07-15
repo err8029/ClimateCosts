@@ -25,6 +25,7 @@ PASOS = [
     ("Incendios: descarga de datos", "wildfire/1_extract_data.py"),
     ("Incendios: cálculo de riesgo", "wildfire/2_wildfire_risk.py"),
     ("Riesgo combinado (25% cada hazard)", "combined/1_combined_risk.py"),
+    ("Impacto financiero (proxy en euros)", "combined/2_financial_impact.py"),
 ]
 
 REQUISITOS = [

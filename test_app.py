@@ -12,7 +12,7 @@ from streamlit.testing.v1 import AppTest
 
 import auth
 
-PAGINAS = ["pages/heat.py", "pages/flood.py", "pages/drought.py", "pages/wildfire.py", "pages/combined.py"]
+PAGINAS = ["pages/heat.py", "pages/flood.py", "pages/drought.py", "pages/wildfire.py", "pages/combined_risk.py", "pages/financial_impact.py"]
 
 ESCENARIOS = ["RCP4.5", "RCP8.5"]
 VARIABLES_CALOR = [
@@ -28,6 +28,10 @@ VARIABLES_INCENDIO = [
     "Riesgo de incendio forestal",
     "Índice de peligro de incendio (Canadian FWI)",
     "Días/año de peligro alto",
+]
+VARIABLES_IMPACTO = [
+    "Impacto total (€)",
+    "Impacto per cápita (€/habitante)",
 ]
 AÑOS = [2030, 2050]
 ESCENARIOS_ARCHIVO = ['rcp4_5', 'rcp8_5']
@@ -103,12 +107,28 @@ def _cargar_wildfire(escenario=None, variable=None):
 
 @functools.lru_cache(maxsize=None)
 def _cargar_combinado(escenario=None):
-    at = AppTest.from_file("App.py", default_timeout=180)
+    # default_timeout más alto: esta página renderiza 4 mapas en una sola ejecución (2 de
+    # riesgo combinado + el overlay de 4 capas), más lenta en frío que las páginas simples.
+    at = AppTest.from_file("App.py", default_timeout=300)
     _sin_login(at)
     at.run()
-    at.switch_page("pages/combined.py").run()
+    at.switch_page("pages/combined_risk.py").run()
     if escenario is not None:
         at.selectbox[0].set_value(escenario).run()
+    assert not at.exception, f"La app lanzó una excepción: {at.exception}"
+    return at
+
+
+@functools.lru_cache(maxsize=None)
+def _cargar_impacto(escenario=None, variable=None):
+    at = AppTest.from_file("App.py", default_timeout=200)
+    _sin_login(at)
+    at.run()
+    at.switch_page("pages/financial_impact.py").run()
+    if escenario is not None:
+        at.selectbox[0].set_value(escenario).run()
+    if variable is not None:
+        at.selectbox[1].set_value(variable).run()
     assert not at.exception, f"La app lanzó una excepción: {at.exception}"
     return at
 
@@ -320,7 +340,7 @@ def test_wildfire_tabla_top_ciudades_y_madrid_primero(escenario, variable):
     assert tabla_ciudades['Municipio'].iloc[0] == 'Madrid'  # ciudad más poblada de España
 
 
-# --- Página combinada: sección de riesgo combinado (25% cada hazard) ---
+# --- Página pages/combined_risk.py: riesgo combinado (40/30/15/15 por hazard) ---
 
 def test_combinado_estado_por_defecto():
     at = _cargar_combinado()
@@ -353,11 +373,69 @@ def test_combinado_tabla_top_incrementos_tiene_10_filas(escenario):
 
 
 @pytest.mark.parametrize("escenario", ESCENARIOS)
-def test_combinado_tabla_top_ciudades_y_madrid_primero(escenario):
+def test_combinado_tabla_top_ciudades_tiene_10_filas_y_madrid_primero(escenario):
     at = _cargar_combinado(escenario)
     tabla_ciudades = at.dataframe[1].value
-    # Hereda el hueco costero de wildfire_risk (ver su página): solo 8 de las 10 ciudades.
-    assert len(tabla_ciudades) == 8
+    # A diferencia de wildfire_risk (que sí tiene un hueco costero propio), combined_risk
+    # ya no hereda ese hueco: los pesos se reescalan entre los componentes disponibles en
+    # vez de anularse cuando falta uno solo (ver README) - las 10 ciudades aparecen.
+    assert len(tabla_ciudades) == 10
+    assert tabla_ciudades['Municipio'].iloc[0] == 'Madrid'  # ciudad más poblada de España
+
+
+# --- Página pages/financial_impact.py ---
+
+def test_impacto_estado_por_defecto():
+    at = _cargar_impacto()
+    assert len(at.selectbox) == 2
+    assert at.selectbox[0].value == "RCP4.5"
+    assert at.selectbox[1].value == "Impacto total (€)"
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS)
+@pytest.mark.parametrize("variable", VARIABLES_IMPACTO)
+def test_impacto_renderiza_sin_excepciones(escenario, variable):
+    _cargar_impacto(escenario, variable)
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS)
+@pytest.mark.parametrize("variable", VARIABLES_IMPACTO)
+def test_impacto_tablas_tienen_las_columnas_esperadas(escenario, variable):
+    at = _cargar_impacto(escenario, variable)
+    assert len(at.dataframe) == 2, "Deberían mostrarse las 2 tablas (incrementos y ciudades)"
+    if variable == "Impacto total (€)":
+        sufijo, etiqueta_pib = " (M€)", "PIB previsto"
+    else:
+        sufijo, etiqueta_pib = " (€/hab.)", "PIB per cápita previsto"
+    columnas_esperadas = [
+        "Municipio", f"Impacto 2030{sufijo}", f"Impacto 2050{sufijo}", f"Incremento{sufijo}",
+        f"{etiqueta_pib} 2030{sufijo}", f"{etiqueta_pib} 2050{sufijo}", "Incremento riesgo (pp)",
+    ]
+    for tabla in at.dataframe:
+        assert list(tabla.value.columns) == columnas_esperadas
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS)
+@pytest.mark.parametrize("variable", VARIABLES_IMPACTO)
+def test_impacto_tabla_top_incrementos_tiene_10_filas(escenario, variable):
+    at = _cargar_impacto(escenario, variable)
+    tabla_incrementos = at.dataframe[0].value
+    assert len(tabla_incrementos) == 10
+    # La tabla está ordenada por el incremento en € (columna 4), no por "Incremento riesgo
+    # (pp)" (columna -1, que es una medida distinta - ver README/caption de la página).
+    assert tabla_incrementos[tabla_incrementos.columns[3]].is_monotonic_decreasing
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS)
+@pytest.mark.parametrize("variable", VARIABLES_IMPACTO)
+def test_impacto_tabla_top_ciudades_tiene_10_filas_y_madrid_primero(escenario, variable):
+    at = _cargar_impacto(escenario, variable)
+    tabla_ciudades = at.dataframe[1].value
+    # A diferencia de wildfire_risk, financial_impact_eur ya no hereda ningún hueco
+    # costero (combined_risk ahora reescala pesos entre componentes disponibles en vez de
+    # anularse - ver README): solo faltan las ~88 mancomunidades sin población, ninguna
+    # de las cuales está entre las 10 ciudades más grandes.
+    assert len(tabla_ciudades) == 10
     assert tabla_ciudades['Municipio'].iloc[0] == 'Madrid'  # ciudad más poblada de España
 
 
@@ -429,10 +507,19 @@ def _ruta_combinado(año, escenario):
     return f"combined/output/municipios_combined_risk_{año}_{escenario}_lite.geojson"
 
 
-# combined_risk exige los 4 componentes (calor/inundación/sequía/incendio) presentes a la
-# vez: en la práctica esto queda dominado por el hueco de incendio (~618, muy cercano a su
-# propio MAX_NULOS_ESPERADOS_INCENDIO), así que se reutiliza el mismo límite.
-MAX_NULOS_ESPERADOS_COMBINADO = MAX_NULOS_ESPERADOS_INCENDIO
+# combined_risk reescala los pesos entre los componentes disponibles cuando falta alguno
+# (ver README): solo queda nulo si a un municipio le faltan los 4 a la vez, lo que en la
+# práctica no ocurre - 0 nulos observados.
+MAX_NULOS_ESPERADOS_COMBINADO = 10
+
+
+def _ruta_impacto(año, escenario):
+    return f"combined/output/municipios_financial_impact_{año}_{escenario}_lite.geojson"
+
+
+# financial_impact_eur depende de la población (para el valor económico expuesto), así que
+# sí hereda el hueco de ~88 mancomunidades sin población (igual que heat_mortality_risk).
+MAX_NULOS_ESPERADOS_IMPACTO = MAX_NULOS_ESPERADOS
 
 
 RUTA_INUNDACION = "flood/output/municipios_inundacion_lite.geojson"
@@ -598,14 +685,17 @@ def test_combined_risk_en_rango_0_1(año, escenario):
 
 @pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
 @pytest.mark.parametrize("año", AÑOS)
-def test_combined_risk_es_la_media_de_sus_4_componentes(año, escenario):
-    # Comprobación de cordura directa sobre la fórmula (25% cada uno): si algún componente
+def test_combined_risk_es_la_suma_ponderada_de_sus_4_componentes(año, escenario):
+    # Comprobación de cordura directa sobre la fórmula (40/30/15/15): si algún componente
     # se pierde o se pesa distinto por error, este test lo detecta.
     gdf = gpd.read_file(_ruta_combinado(año, escenario)).dropna(
         subset=['combined_risk', 'calor_norm', 'inundacion_norm', 'sequia_norm', 'incendio_norm']
     )
-    media_componentes = gdf[['calor_norm', 'inundacion_norm', 'sequia_norm', 'incendio_norm']].mean(axis=1)
-    assert (gdf['combined_risk'] - media_componentes).abs().max() < 1e-9
+    suma_ponderada = (
+        0.40 * gdf['calor_norm'] + 0.30 * gdf['inundacion_norm']
+        + 0.15 * gdf['sequia_norm'] + 0.15 * gdf['incendio_norm']
+    )
+    assert (gdf['combined_risk'] - suma_ponderada).abs().max() < 1e-9
 
 
 def test_riesgo_combinado_2030_a_2050_es_mayoritariamente_creciente():
@@ -622,6 +712,90 @@ def test_riesgo_combinado_2030_a_2050_es_mayoritariamente_creciente():
         assert fraccion_positiva > 0.8, (
             f"{escenario}: solo el {fraccion_positiva:.0%} de los municipios muestra un "
             f"incremento de riesgo combinado 2030->2050 (se esperaba >80%)"
+        )
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("año", AÑOS)
+def test_geojson_impacto_existe_y_tiene_las_columnas_esperadas(año, escenario):
+    ruta = _ruta_impacto(año, escenario)
+    assert os.path.exists(ruta), f"Falta {ruta} - ejecuta combined/2_financial_impact.py"
+    gdf = gpd.read_file(ruta)
+    for columna in ['NAMEUNIT', 'ine_code', 'financial_impact_eur', 'financial_impact_eur_per_capita', 'valor_economico_eur', 'pib_per_capita', 'combined_risk', 'geometry']:
+        assert columna in gdf.columns
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("año", AÑOS)
+def test_impacto_financiero_nulos_dentro_de_lo_esperado(año, escenario):
+    gdf = gpd.read_file(_ruta_impacto(año, escenario))
+    nulos = int(gdf['financial_impact_eur'].isna().sum())
+    assert nulos <= MAX_NULOS_ESPERADOS_IMPACTO, (
+        f"{año}/{escenario}: {nulos} municipios sin financial_impact_eur, "
+        f"se esperaban como mucho {MAX_NULOS_ESPERADOS_IMPACTO} (ver README, Known limitations)"
+    )
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("año", AÑOS)
+def test_impacto_financiero_no_negativo_y_no_supera_el_valor_economico(año, escenario):
+    gdf = gpd.read_file(_ruta_impacto(año, escenario)).dropna(subset=['financial_impact_eur', 'valor_economico_eur'])
+    assert gdf['financial_impact_eur'].min() >= 0.0
+    # El impacto es valor_economico x combined_risk (en [0,1]), así que nunca debería
+    # superar el propio valor económico expuesto.
+    assert (gdf['financial_impact_eur'] <= gdf['valor_economico_eur']).all()
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("año", AÑOS)
+def test_impacto_per_capita_no_negativo(año, escenario):
+    gdf = gpd.read_file(_ruta_impacto(año, escenario))
+    valores = gdf['financial_impact_eur_per_capita'].dropna()
+    assert valores.min() >= 0.0
+
+
+def test_incremento_riesgo_pp_es_la_diferencia_de_combined_risk():
+    # "Incremento riesgo (pp)" (pages/financial_impact.py) debe ser exactamente
+    # (combined_risk_2050 - combined_risk_2030) x 100, no una variación porcentual del
+    # impacto en €.
+    for escenario in ESCENARIOS_ARCHIVO:
+        g30 = gpd.read_file(_ruta_impacto(2030, escenario)).set_index('ine_code')
+        g50 = gpd.read_file(_ruta_impacto(2050, escenario)).set_index('ine_code')
+        comunes = g30.index.intersection(g50.index)
+        combined_30 = g30.loc[comunes, 'combined_risk']
+        combined_50 = g50.loc[comunes, 'combined_risk']
+        incremento_pp = (combined_50 - combined_30).dropna() * 100
+        assert incremento_pp.abs().max() < 100.0  # nunca puede superar 100pp (rango 0-1 x 100)
+
+
+def test_impacto_financiero_2030_a_2050_es_mayoritariamente_creciente():
+    for escenario in ESCENARIOS_ARCHIVO:
+        g30 = gpd.read_file(_ruta_impacto(2030, escenario)).set_index('ine_code')
+        g50 = gpd.read_file(_ruta_impacto(2050, escenario)).set_index('ine_code')
+        comunes = g30.index.intersection(g50.index)
+        delta = g50.loc[comunes, 'financial_impact_eur'] - g30.loc[comunes, 'financial_impact_eur']
+        delta = delta.dropna()
+        fraccion_positiva = (delta > 0).mean()
+        assert fraccion_positiva > 0.9, (
+            f"{escenario}: solo el {fraccion_positiva:.0%} de los municipios muestra un "
+            f"incremento de impacto financiero 2030->2050 (se esperaba >90%)"
+        )
+
+
+def test_impacto_per_capita_2030_a_2050_es_mayoritariamente_creciente():
+    # Umbral algo más bajo que el impacto total (>90%): al no depender de la población,
+    # el per cápita sigue más de cerca la fracción creciente de combined_risk en sí
+    # (verificado: ~90-95% en la práctica, frente al ~98-100% del impacto total).
+    for escenario in ESCENARIOS_ARCHIVO:
+        g30 = gpd.read_file(_ruta_impacto(2030, escenario)).set_index('ine_code')
+        g50 = gpd.read_file(_ruta_impacto(2050, escenario)).set_index('ine_code')
+        comunes = g30.index.intersection(g50.index)
+        delta = g50.loc[comunes, 'financial_impact_eur_per_capita'] - g30.loc[comunes, 'financial_impact_eur_per_capita']
+        delta = delta.dropna()
+        fraccion_positiva = (delta > 0).mean()
+        assert fraccion_positiva > 0.85, (
+            f"{escenario}: solo el {fraccion_positiva:.0%} de los municipios muestra un "
+            f"incremento de impacto per cápita 2030->2050 (se esperaba >85%)"
         )
 
 

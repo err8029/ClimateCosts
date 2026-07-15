@@ -4,7 +4,7 @@ Modeling the impact of climate change — heat, flooding, wildfire, and drought 
 
 ## Status
 
-All four hazards are now implemented: nationwide heat-mortality risk (Heat Index from temperature + humidity, weighted by population, across 2 years × 2 emissions scenarios), flood risk (MITECO population exposure, current + projected, plus a separate Copernicus-derived projected river discharge intensity indicator under RCP4.5/8.5), drought risk (meteorological drought duration + magnitude, current + projected), and wildfire risk (fire danger index + high-danger days weighted by population, same structure as heat) — plus a blended `combined_risk` score (25% weight each hazard, see the Pipeline section) and a login-gated multi-page Streamlit app (`App.py` + `pages/`) with a sidebar-navigable page per hazard, a combined-risk page, and a raw multi-layer overlay view. See [Next steps](#next-steps) for what's left.
+All four hazards are now implemented: nationwide heat-mortality risk (Heat Index from temperature + humidity, weighted by population, across 2 years × 2 emissions scenarios), flood risk (MITECO population exposure, current + projected, plus a separate Copernicus-derived projected river discharge intensity indicator under RCP4.5/8.5), drought risk (meteorological drought duration + magnitude, current + projected), and wildfire risk (fire danger index + high-danger days weighted by population, same structure as heat) — plus a blended `combined_risk` score (40/30/15/15 weight by hazard, reweighted when a component is missing rather than going null) and a `financial_impact_eur`/`financial_impact_eur_per_capita` proxy (GDP-per-capita-based economic exposure, same hazard weighting — see the Pipeline section), all behind a login-gated multi-page Streamlit app (`App.py` + `pages/`) with a sidebar-navigable page per hazard, a combined-risk page (+ raw overlay view), and a financial-impact page. See [Next steps](#next-steps) for what's left.
 
 ## Approach
 
@@ -37,7 +37,8 @@ ClimateCosts/
 │   ├── flood.py                 # Flood risk page
 │   ├── drought.py                # Drought risk page
 │   ├── wildfire.py                # Wildfire risk page
-│   └── combined.py                 # Multi-hazard overlay (toggleable layers)
+│   ├── combined_risk.py            # Blended combined_risk page + multi-hazard overlay
+│   └── financial_impact.py          # financial_impact_eur page (total + per-capita)
 ├── test_app.py                # pytest suite for the whole app
 ├── shared/
 │   └── boundaries/            # National municipal boundary shapefile (CNIG), shared by every hazard
@@ -67,8 +68,9 @@ ClimateCosts/
 │   ├── output/                 # municipios_wildfire_risk_{año}_{escenario}(.geojson|_lite.geojson)
 │   └── QGIS/
 └── combined/
-    ├── 1_combined_risk.py      # Blends all 4 hazards, 25% weight each, into combined_risk
-    └── output/                 # municipios_combined_risk_{año}_{escenario}(.geojson|_lite.geojson)
+    ├── 1_combined_risk.py      # Blends all 4 hazards (40/30/15/15) into combined_risk
+    ├── 2_financial_impact.py   # Translates combined_risk into euro proxies (total + per-capita)
+    └── output/                 # municipios_combined_risk_{...} + municipios_financial_impact_{...}
 ```
 
 All scripts are written to run from the repository root (e.g. `python heat/2_heatwave_risk.py`, not from inside `heat/`), and read/write paths accordingly.
@@ -165,27 +167,52 @@ Output: `wildfire/output/municipios_wildfire_risk_{año}_{escenario}.geojson` / 
 - Same population-projection caveats as heat (2050 figures are an extrapolation beyond INE's published 2026–2041 range).
 - No wind-direction or fuel-load data is incorporated — this is a *weather-driven fire danger* proxy (matching what the underlying Canadian FWI actually measures), not a full fire-spread or vegetation-fuel model.
 
-### 7. `combined/1_combined_risk.py` — Combined risk (25% each hazard)
+### 7. `combined/1_combined_risk.py` — Combined risk (weighted by hazard)
 
-Joins the outputs of all 4 hazard pipelines above and blends them into one `combined_risk` score per municipality, per year×scenario, at an explicit 25% weight each. Each hazard contributes exactly one representative variable:
+Joins the outputs of all 4 hazard pipelines above and blends them into one `combined_risk` score per municipality, per year×scenario. Each hazard contributes exactly one representative variable, weighted **40% heat / 30% flood / 15% drought / 15% wildfire** (not equal weights — see the rationale below, shared with `financial_impact_eur`):
 
 | Hazard | Variable used | Why |
 |---|---|---|
 | Heat | `heat_mortality_risk` | Already a 0–1 composite by construction — used as-is. |
-| Flood | `flood_risk_t100_poblacion_afectada_{año}` (projected affected population, T=100yr), normalized | Not the `flood_risk_t100` fraction — that's fixed regardless of year (MITECO zones don't change), so using it would make flood's quarter of the score identical for 2030 and 2050. The projected affected-population count *does* vary by year, so the combined score actually reflects demographic change in flood-prone areas the same way heat's population term does. |
+| Flood | `flood_risk_t100_poblacion_afectada_{año}` (projected affected population, T=100yr), normalized | Not the `flood_risk_t100` fraction — that's fixed regardless of year (MITECO zones don't change), so using it would make flood's contribution identical for 2030 and 2050. The projected affected-population count *does* vary by year, so the combined score actually reflects demographic change in flood-prone areas the same way heat's population term does. |
 | Drought | mean of normalized `drought_duration_months` and normalized `drought_magnitude` | Neither is naturally 0–1, so each gets its own fixed-range normalization (same methodology as every other hazard in this project) before averaging. |
 | Wildfire | `wildfire_risk` | Already a 0–1 composite by construction — used as-is. |
 
 The normalization ranges for flood and drought are computed fresh, here, across the 4 year×scenario combinations being generated — **not** reused from `pages/flood.py`/`pages/drought.py`'s own display logic. This was an explicit choice: it keeps all 4 components in one coherent, self-contained normalization space for the combined score specifically, rather than silently inheriting whatever normalization decisions happen to already be baked into each hazard's own page.
 
-`combined_risk` is only computed where **all 4** components have a value — it is *not* a reweighted average of whichever components happen to be available. A municipality missing even one component (in practice, almost always because it falls in wildfire's coastal data gap — see wildfire's Known limitations) gets a null combined score rather than a number that silently represents less than the full 25%-each blend.
+It's a **weighted sum, not a product**: a component being 0 (or missing) doesn't zero out the rest, it just contributes nothing to its own slice. When a municipality is missing one or more components (in practice, almost always wildfire's coastal data gap — see wildfire's Known limitations), the remaining weights are **rescaled to sum to 1 among just the available components**, rather than leaving `combined_risk` null. A municipality is only left without a score if *all 4* components are missing, which doesn't happen in practice (every municipality has at least drought data, since that hazard has no coverage gaps at all).
 
 Output: `combined/output/municipios_combined_risk_{año}_{escenario}.geojson` / `_lite.geojson` (`combined_risk`, `calor_norm`, `inundacion_norm`, `sequia_norm`, `incendio_norm`).
 
 **Known limitations**:
 - Inherits every individual hazard's own known limitations (population-projection extrapolation, wildfire's coastal data gap, SPI-3 vs. SPEI, etc.) — see each hazard's own section above.
-- The equal-25%-each weighting is a modeling choice, not a validated risk-severity ranking — it does not claim that all 4 hazards are equally economically or humanly costly per unit of normalized risk (see the financial-impact discussion, if/when implemented).
-- Null municipalities are dominated by wildfire's coastal gap (~535–618), since that's by far the largest gap among the 4 hazards; the "top cities" table on `pages/combined.py` can show fewer than 10 rows for the same reason as wildfire's.
+- The 40/30/15/15 weighting is a defensible *relative ordering* grounded in published research (see `financial_impact_eur` below for the sources), not a precision-fitted regression — it does not claim to know the exact economic cost per unit of physical risk for each hazard, only their rough relative order of magnitude.
+- When components are missing and weights get rescaled, a municipality's score reflects *only* the hazards with data for it — comparing such a municipality directly against one with all 4 components should be done with that caveat in mind.
+
+### 8. `combined/2_financial_impact.py` — Financial impact proxy (€)
+
+Translates `combined_risk` into two euro figures per municipality — **total** exposure and **per-capita** exposure — because they answer different questions and rank municipalities very differently:
+
+```
+valor_economico_eur          = población proyectada(año) × PIB per cápita provincial
+financial_impact_eur         = valor_economico_eur × combined_risk
+financial_impact_eur_per_capita = PIB per cápita provincial × combined_risk   (población se cancela algebraicamente)
+```
+
+`financial_impact_eur` (total) necessarily grows with population, so it's dominated by the biggest cities regardless of how physically at-risk they actually are (Madrid topped every ranking under the first version of this metric largely because of its sheer economic scale, not because it's uniquely vulnerable). `financial_impact_eur_per_capita` **doesn't depend on municipality size at all** — the population term cancels out algebraically, leaving just `PIB per cápita × combined_risk` — so it re-ranks toward municipalities where climate risk threatens the largest *share* of local economic life, independent of scale. Both are shown side by side on `pages/financial_impact.py` (a **Variable** dropdown switches between them) rather than picking one, since "where's the most total € at risk nationally" (useful for infrastructure/budget prioritization) and "where is risk most concentrated relative to the local economy" are both legitimate, different questions.
+
+Two deliberate departures from `combined_risk`'s own methodology, both requested explicitly rather than assumed:
+
+1. **Exposure base is economic value, not headcount.** `PIB per cápita` comes from INE's Contabilidad Regional de España (table `76926`, "PRODUCTO INTERIOR BRUTO A PRECIOS DE MERCADO" by province) divided by current provincial population — INE doesn't publish municipal-level GDP, so this uses the same province→municipality extrapolation already used for population growth elsewhere in this project (every municipality in a province is assumed to share its province's per-capita GDP — this is why Madrid-province commuter towns like Móstoles, Getafe, or Alcobendas cluster near the top of the per-capita ranking too, not just Madrid city itself). GDP per capita itself is **held constant in real terms** — only population is projected to 2030/2050 — because projecting GDP growth on top of an already-approximate population projection would stack two speculative assumptions instead of one.
+2. **The 4 hazards are weighted 40/30/15/15 (heat/flood/drought/wildfire), not equally**, and — since `combined_risk` itself now uses these same weights — this is really one shared weighting scheme rather than two. The relative weights are grounded in the EU Joint Research Centre's PESETA IV study (the reference EU assessment of climate damage costs by hazard) and aggregate loss reporting: heat dominates in welfare-loss terms in Southern Europe (mortality + lost labor productivity) and gets the largest weight; river flooding is the second-largest cost but highly event-concentrated (e.g. the October 2024 Valencia DANA alone caused >€17bn, over 20% of that province's annual GDP, in a single event); drought and wildfire are typically a smaller order of magnitude in an average year, though both can spike severely in a bad regional year (drought losses reached 15% of regional GDP in the worst-hit Mediterranean regions per JRC; Spain+Portugal accounted for 43% of all EU wildfire burnt area in 2025).
+
+Output: `combined/output/municipios_financial_impact_{año}_{escenario}.geojson` / `_lite.geojson` (`financial_impact_eur`, `financial_impact_eur_per_capita`, `valor_economico_eur`, `pib_per_capita`, `combined_risk` passed through for the page's tables — see below).
+
+**Known limitations — read before treating any number here as a real damage estimate**:
+- This is an order-of-magnitude proxy, not a calibrated damage model. The 40/30/15/15 weights are a defensible *relative ordering* grounded in real published research, not a precision-fitted regression — the underlying sources mix different time horizons (present-day, 2029, 2050, 2100), different warming/scenario levels, and fundamentally different loss concepts (heat figures are largely monetized-mortality/welfare loss; flood/drought/wildfire figures are more often direct asset/output damage) that aren't strictly comparable to each other.
+- GDP per capita held constant in real terms ignores real economic growth, structural change, and inflation between now and 2030/2050 — a genuine simplification, not an estimate of future GDP.
+- The per-capita figure is identical for every municipality in the same province with the same `combined_risk` — it inherits the province-level GDP extrapolation's inability to distinguish a provincial capital from a small town in the same province.
+- Only null for the ~88 mancomunidades without an INE population figure (same gap as `heat_mortality_risk`) — `combined_risk`'s own reweighting means the wildfire coastal gap no longer propagates here.
 
 ## `App.py` + `pages/` — Interactive multi-page viewer (Streamlit)
 
@@ -195,7 +222,8 @@ A multi-page Streamlit app with a sidebar navigation menu — `App.py` is just a
 - **`pages/flood.py`** — two stacked sections, since flood risk comes from two genuinely different sources (see the pipeline sections above). First, MITECO population exposure: a **Periodo de retorno** dropdown (10/100/500 years) driving two side-by-side maps of projected affected population (2030 left, 2050 right — the flood zones themselves don't change, only who lives in them), plus the same two summary tables below (top 10 increments, top 10 cities). Below that, projected river discharge intensity: **Escenario (RCP)** and **Periodo de retorno** dropdowns (2/5/10/50 years) driving two side-by-side maps of projected discharge for the two available climatological windows (`2011_2040`/`2041_2070`), plus the same two summary tables.
 - **`pages/drought.py`** — same layout again: **Escenario (RCP)** and **Variable** dropdowns (duración de la sequía / magnitud de la sequía), two side-by-side maps (2030/2050), plus the same two summary tables below.
 - **`pages/wildfire.py`** — same layout as `pages/heat.py`: **Escenario (RCP)** and **Variable** dropdowns (riesgo de incendio forestal / índice de peligro (Canadian FWI) / días de peligro alto), two side-by-side maps (2030/2050), plus the same two summary tables below.
-- **`pages/combined.py`** — two stacked sections. First, the blended `combined_risk` score (see the pipeline section above): an **Escenario (RCP)** dropdown driving two side-by-side maps (2030/2050), plus the same two summary tables (top 10 increments, top 10 cities) as every other hazard page. Below that, the original overlay view: heat, flood, drought, and wildfire risk as separate toggleable layers (Folium layer control) on one map, so the 4 raw layers can be compared spatially side by side — a different, complementary view from the single blended number above, not a duplicate of it.
+- **`pages/combined_risk.py`** — two stacked sections. First, the blended `combined_risk` score (see the pipeline section above): an **Escenario (RCP)** dropdown driving two side-by-side maps (2030/2050), plus the same two summary tables (top 10 increments, top 10 cities) as every other hazard page. Below that, the raw overlay view: heat, flood, drought, and wildfire risk as separate toggleable layers (Folium layer control) on one map, so the 4 raw layers can be compared spatially side by side — a different, complementary view from the blended score above, not a duplicate of it.
+- **`pages/financial_impact.py`** — its own page (separate from the risk score, since it answers a different question). **Escenario (RCP)** and **Variable** dropdowns — the Variable choice switches between "Impacto total (€)" (colored on a **log scale**, since a few large cities are orders of magnitude above everywhere else — a linear scale would leave almost the entire map one flat color) and "Impacto per cápita (€/habitante)" (linear scale — without total's population-driven long tail, linear already spreads the contrast well). Same two-map layout as every other page; the tables add two things beyond the usual 2030/2050/increment columns: the underlying **GDP forecast** (total PIB or PIB per cápita, matching whichever Variable is selected) for context next to the impact figure, and an **"Incremento riesgo (pp)"** column — percentage points of `combined_risk` itself (2050 minus 2030), which isolates how much the underlying *risk share* grew from how much the € figures grew simply because the GDP base itself grew.
 
 The color scale (`vmin`/`vmax`) for the heat page is fixed per variable across both years and both scenarios (not recomputed per view), so color is visually comparable when switching selections — mixing scales across variables wouldn't make sense, since `heat_mortality_risk` is 0–1 while the Heat Index columns are in °C. Municipalities with a null value (see known limitations above) render gray instead of crashing the colormap.
 
@@ -241,6 +269,7 @@ This prompts for a username and password (the password isn't echoed to the termi
 - `wildfire/input/wildfire_{escenario}.zip` / `wildfire_raw_{escenario}/` — raw Copernicus `sis-ecde-climate-indicators` download (one per scenario, covering the full 1985-2083 time series).
 - `wildfire/output/municipios_wildfire_risk_{año}_{escenario}.geojson` / `_lite.geojson` — municipalities with the wildfire risk indicators attached, one pair per year×scenario combination.
 - `combined/output/municipios_combined_risk_{año}_{escenario}.geojson` / `_lite.geojson` — municipalities with the blended `combined_risk` score attached, one pair per year×scenario combination.
+- `combined/output/municipios_financial_impact_{año}_{escenario}.geojson` / `_lite.geojson` — municipalities with the `financial_impact_eur` and `financial_impact_eur_per_capita` proxies attached, one pair per year×scenario combination.
 - `{heat,flood,drought,wildfire}/QGIS/` — QGIS project files for visualizing each hazard.
 
 Large/generated data files, boundary shapefiles, and API credentials are excluded from version control (see `.gitignore`) — they're either downloaded by the scripts above or fetched manually as described below.
@@ -290,7 +319,7 @@ Install with `pip install -r requirements.txt`, or manually:
 
 ## Testing
 
-`test_app.py` covers the whole app: login tests (form appears when unauthenticated, wrong credentials rejected, the PBKDF2 hashing/comparison mechanism itself verified with synthetic test credentials — never the real production password, which never appears in the test suite), smoke tests (every page under `pages/` renders without exceptions, navigated to via `AppTest.switch_page()`), detailed checks on the heat/drought/wildfire/combined-risk pages across every scenario×variable combination and on flood's river-discharge section across every scenario×return-period combination, and data sanity checks on every hazard's geojsons (expected columns, row counts, value ranges, no more nulls than the documented known-limitations count, majority-positive 2030→2050 deltas, flood/discharge risk increasing with return period, `combined_risk` verified to equal the mean of its 4 components exactly). Content tests bypass the login form by pre-seeding `AppTest`'s session state (`autenticado=True`) rather than depending on real or fake credentials. Run with:
+`test_app.py` covers the whole app: login tests (form appears when unauthenticated, wrong credentials rejected, the PBKDF2 hashing/comparison mechanism itself verified with synthetic test credentials — never the real production password, which never appears in the test suite), smoke tests (every page under `pages/` renders without exceptions, navigated to via `AppTest.switch_page()`), detailed checks on the heat/drought/wildfire/combined-risk/financial-impact pages across every scenario×variable combination and on flood's river-discharge section across every scenario×return-period combination, and data sanity checks on every hazard's geojsons (expected columns, row counts, value ranges, no more nulls than the documented known-limitations count, majority-positive 2030→2050 deltas, flood/discharge risk increasing with return period, `combined_risk` verified to equal its exact weighted-sum formula, `financial_impact_eur` verified non-negative and never exceeding its own `valor_economico_eur` base). Content tests bypass the login form by pre-seeding `AppTest`'s session state (`autenticado=True`) rather than depending on real or fake credentials. Run with:
 
 ```
 python -m pytest test_app.py -v
@@ -302,7 +331,7 @@ Each unique scenario/variable combination spins up a real `streamlit.testing.v1.
 
 - Add wildfire spread/burnt-area history (e.g. EFFIS) alongside the current weather-driven fire-danger proxy, for a more complete picture than danger-index-only.
 - Merge all hazard indicators into a single national GeoPackage plus a styled QGIS project.
-- Translate hazard indicators into estimated economic costs per municipality.
+- Refine `financial_impact_eur`'s hazard cost coefficients (currently 40/30/15/15, grounded in JRC PESETA IV but not precisely calibrated to Spain — see Known limitations) as more Spain-specific, same-horizon loss data becomes available.
 - Incorporate building-level exposure data (`madrid_buildings.gpkg`).
 
 ## License

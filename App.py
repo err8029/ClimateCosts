@@ -23,7 +23,8 @@ paginas = st.navigation(
             st.Page("pages/wildfire.py", title="Incendios", icon="🔥"),
         ],
         "Combinado:": [
-            st.Page("pages/combined.py", title="Perfiles", icon="🗺️"),
+            st.Page("pages/combined_risk.py", title="Riesgo combinado", icon="🗺️"),
+            st.Page("pages/financial_impact.py", title="Impacto financiero", icon="💶"),
         ]
     }
 )
