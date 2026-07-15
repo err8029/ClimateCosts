@@ -1,9 +1,82 @@
 import streamlit as st
 
-from common import rango_columna, construir_mapa_combinado, load_header_title, load_logo
+from common import cargar_geojson, rango_columna, construir_mapa, construir_mapa_combinado, load_header_title, load_logo
 
 load_header_title()
 load_logo()
+
+AÑOS = [2030, 2050]
+ESCENARIOS = {"RCP4.5": "rcp4_5", "RCP8.5": "rcp8_5"}
+
+# Mismas 10 ciudades más pobladas de España que en heat.py/flood.py/drought.py/wildfire.py.
+TOP10_CIUDADES = ['28079', '08019', '46250', '50297', '41091', '29067', '30030', '07040', '03014', '48020']
+
+
+def ruta_combinado(año, escenario):
+    return f"combined/output/municipios_combined_risk_{año}_{escenario}_lite.geojson"
+
+
+def combinar_años(escenario):
+    datos_2030 = cargar_geojson(ruta_combinado(2030, escenario))[['ine_code', 'NAMEUNIT', 'combined_risk']]
+    datos_2050 = cargar_geojson(ruta_combinado(2050, escenario))[['ine_code', 'combined_risk']]
+
+    combinado = datos_2030.merge(datos_2050, on='ine_code', suffixes=('_2030', '_2050'))
+    combinado = combinado.dropna(subset=['combined_risk_2030', 'combined_risk_2050'])
+    combinado['incremento'] = combinado['combined_risk_2050'] - combinado['combined_risk_2030']
+    return combinado
+
+
+def formatear_tabla(datos):
+    return datos[['NAMEUNIT', 'combined_risk_2030', 'combined_risk_2050', 'incremento']].rename(columns={
+        'NAMEUNIT': 'Municipio',
+        'combined_risk_2030': 'Riesgo combinado 2030',
+        'combined_risk_2050': 'Riesgo combinado 2050',
+        'incremento': 'Incremento',
+    }).round(3).reset_index(drop=True)
+
+
+st.title("🗺️ Riesgo combinado")
+st.caption(
+    "Combina los 4 riesgos (calor, inundación, sequía, incendio) a partes iguales "
+    "(25% cada uno) en un único indicador por municipio. Cada hazard aporta una variable "
+    "representativa normalizada 0-1 con un rango propio (no reutiliza directamente los "
+    "números mostrados en la página de cada hazard) - ver README. Solo se calcula donde "
+    "los 4 componentes tienen dato: los municipios sin alguno (sobre todo por el hueco "
+    "costero de incendio, ver su página) quedan sin riesgo combinado."
+)
+
+etiqueta_escenario = st.selectbox("Escenario (RCP)", list(ESCENARIOS.keys()))
+escenario = ESCENARIOS[etiqueta_escenario]
+
+vmin, vmax = rango_columna(
+    tuple(ruta_combinado(año, esc) for esc in ESCENARIOS.values() for año in AÑOS),
+    "combined_risk",
+)
+
+mapa_2030, mapa_2050 = st.columns(2)
+
+with mapa_2030:
+    st.subheader("2030")
+    construir_mapa(ruta_combinado(2030, escenario), "combined_risk", vmin, vmax, etiqueta="Riesgo combinado").to_streamlit(height=600)
+
+with mapa_2050:
+    st.subheader("2050")
+    construir_mapa(ruta_combinado(2050, escenario), "combined_risk", vmin, vmax, etiqueta="Riesgo combinado").to_streamlit(height=600)
+
+tabla_incrementos, tabla_ciudades = st.columns(2)
+combinado_años = combinar_años(escenario)
+
+with tabla_incrementos:
+    st.subheader("Top 10 mayores incrementos")
+    top_incrementos = combinado_años.sort_values('incremento', ascending=False).head(10)
+    st.dataframe(formatear_tabla(top_incrementos), width="stretch")
+
+with tabla_ciudades:
+    st.subheader("Top 10 ciudades españolas")
+    ciudades = combinado_años.set_index('ine_code').reindex(TOP10_CIUDADES).dropna().reset_index()
+    st.dataframe(formatear_tabla(ciudades), width="stretch")
+
+st.divider()
 
 st.title("🗺️ Vista combinada")
 st.caption(

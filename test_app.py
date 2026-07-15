@@ -101,6 +101,18 @@ def _cargar_wildfire(escenario=None, variable=None):
     return at
 
 
+@functools.lru_cache(maxsize=None)
+def _cargar_combinado(escenario=None):
+    at = AppTest.from_file("App.py", default_timeout=180)
+    _sin_login(at)
+    at.run()
+    at.switch_page("pages/combined.py").run()
+    if escenario is not None:
+        at.selectbox[0].set_value(escenario).run()
+    assert not at.exception, f"La app lanzó una excepción: {at.exception}"
+    return at
+
+
 # --- Smoke tests: cada página debe cargar sin excepciones ---
 
 @pytest.mark.parametrize("pagina", PAGINAS)
@@ -308,6 +320,47 @@ def test_wildfire_tabla_top_ciudades_y_madrid_primero(escenario, variable):
     assert tabla_ciudades['Municipio'].iloc[0] == 'Madrid'  # ciudad más poblada de España
 
 
+# --- Página combinada: sección de riesgo combinado (25% cada hazard) ---
+
+def test_combinado_estado_por_defecto():
+    at = _cargar_combinado()
+    assert len(at.selectbox) == 1
+    assert at.selectbox[0].value == "RCP4.5"
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS)
+def test_combinado_renderiza_sin_excepciones(escenario):
+    _cargar_combinado(escenario)
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS)
+def test_combinado_tablas_tienen_las_columnas_esperadas(escenario):
+    at = _cargar_combinado(escenario)
+    assert len(at.dataframe) == 2, "Deberían mostrarse las 2 tablas (incrementos y ciudades)"
+    for tabla in at.dataframe:
+        columnas = list(tabla.value.columns)
+        assert columnas[0] == "Municipio"
+        assert columnas[-1] == "Incremento"
+        assert len(columnas) == 4
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS)
+def test_combinado_tabla_top_incrementos_tiene_10_filas(escenario):
+    at = _cargar_combinado(escenario)
+    tabla_incrementos = at.dataframe[0].value
+    assert len(tabla_incrementos) == 10
+    assert tabla_incrementos['Incremento'].is_monotonic_decreasing
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS)
+def test_combinado_tabla_top_ciudades_y_madrid_primero(escenario):
+    at = _cargar_combinado(escenario)
+    tabla_ciudades = at.dataframe[1].value
+    # Hereda el hueco costero de wildfire_risk (ver su página): solo 8 de las 10 ciudades.
+    assert len(tabla_ciudades) == 8
+    assert tabla_ciudades['Municipio'].iloc[0] == 'Madrid'  # ciudad más poblada de España
+
+
 # --- Página de inundación ---
 
 def test_flood_renderiza_con_cada_periodo_de_retorno():
@@ -370,6 +423,16 @@ def _ruta_incendio(año, escenario):
 # indicators para este indicador enmascara una franja costera bastante más ancha que la de
 # temperatura de heat - ver README, Known limitations).
 MAX_NULOS_ESPERADOS_INCENDIO = 700
+
+
+def _ruta_combinado(año, escenario):
+    return f"combined/output/municipios_combined_risk_{año}_{escenario}_lite.geojson"
+
+
+# combined_risk exige los 4 componentes (calor/inundación/sequía/incendio) presentes a la
+# vez: en la práctica esto queda dominado por el hueco de incendio (~618, muy cercano a su
+# propio MAX_NULOS_ESPERADOS_INCENDIO), así que se reutiliza el mismo límite.
+MAX_NULOS_ESPERADOS_COMBINADO = MAX_NULOS_ESPERADOS_INCENDIO
 
 
 RUTA_INUNDACION = "flood/output/municipios_inundacion_lite.geojson"
@@ -499,6 +562,66 @@ def test_riesgo_incendio_2030_a_2050_es_mayoritariamente_creciente():
         assert fraccion_positiva > 0.9, (
             f"{escenario}: solo el {fraccion_positiva:.0%} de los municipios muestra un "
             f"incremento de riesgo de incendio 2030->2050 (se esperaba >90%)"
+        )
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("año", AÑOS)
+def test_geojson_combinado_existe_y_tiene_las_columnas_esperadas(año, escenario):
+    ruta = _ruta_combinado(año, escenario)
+    assert os.path.exists(ruta), f"Falta {ruta} - ejecuta combined/1_combined_risk.py"
+    gdf = gpd.read_file(ruta)
+    columnas_esperadas = ['NAMEUNIT', 'ine_code', 'combined_risk', 'calor_norm', 'inundacion_norm', 'sequia_norm', 'incendio_norm', 'geometry']
+    for columna in columnas_esperadas:
+        assert columna in gdf.columns
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("año", AÑOS)
+def test_combined_risk_nulos_dentro_de_lo_esperado(año, escenario):
+    gdf = gpd.read_file(_ruta_combinado(año, escenario))
+    nulos = int(gdf['combined_risk'].isna().sum())
+    assert nulos <= MAX_NULOS_ESPERADOS_COMBINADO, (
+        f"{año}/{escenario}: {nulos} municipios sin combined_risk, "
+        f"se esperaban como mucho {MAX_NULOS_ESPERADOS_COMBINADO} (ver README, Known limitations)"
+    )
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("año", AÑOS)
+def test_combined_risk_en_rango_0_1(año, escenario):
+    gdf = gpd.read_file(_ruta_combinado(año, escenario))
+    valores = gdf['combined_risk'].dropna()
+    assert valores.min() >= 0.0
+    assert valores.max() <= 1.0
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("año", AÑOS)
+def test_combined_risk_es_la_media_de_sus_4_componentes(año, escenario):
+    # Comprobación de cordura directa sobre la fórmula (25% cada uno): si algún componente
+    # se pierde o se pesa distinto por error, este test lo detecta.
+    gdf = gpd.read_file(_ruta_combinado(año, escenario)).dropna(
+        subset=['combined_risk', 'calor_norm', 'inundacion_norm', 'sequia_norm', 'incendio_norm']
+    )
+    media_componentes = gdf[['calor_norm', 'inundacion_norm', 'sequia_norm', 'incendio_norm']].mean(axis=1)
+    assert (gdf['combined_risk'] - media_componentes).abs().max() < 1e-9
+
+
+def test_riesgo_combinado_2030_a_2050_es_mayoritariamente_creciente():
+    # Umbral más bajo que en los hazards individuales (>90%): la sequía por sí sola solo
+    # crece en ~73-88% de los municipios (ver su página), lo que arrastra un poco a la baja
+    # la fracción creciente del combinado (verificado: ~85-93% en la práctica).
+    for escenario in ESCENARIOS_ARCHIVO:
+        g30 = gpd.read_file(_ruta_combinado(2030, escenario)).set_index('ine_code')
+        g50 = gpd.read_file(_ruta_combinado(2050, escenario)).set_index('ine_code')
+        comunes = g30.index.intersection(g50.index)
+        delta = g50.loc[comunes, 'combined_risk'] - g30.loc[comunes, 'combined_risk']
+        delta = delta.dropna()
+        fraccion_positiva = (delta > 0).mean()
+        assert fraccion_positiva > 0.8, (
+            f"{escenario}: solo el {fraccion_positiva:.0%} de los municipios muestra un "
+            f"incremento de riesgo combinado 2030->2050 (se esperaba >80%)"
         )
 
 

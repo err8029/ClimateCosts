@@ -1,0 +1,16 @@
+cdsapi==0.7.7
+geopandas==1.0.1
+xarray==2024.7.0
+rioxarray==0.15.0
+netCDF4==1.7.2
+requests==2.32.3
+numpy==2.0.2
+pyogrio==0.11.1
+pyproj==3.6.1
+streamlit==1.50.0
+leafmap==0.63.0
+branca==0.8.2
+folium==0.20.0
+shapely==2.0.7
+pandas==2.2.2
+pytest==8.4.2
