@@ -4,7 +4,7 @@ Modeling the impact of climate change — heat, flooding, wildfire, and drought 
 
 ## Status
 
-Work in progress, scaling up from an initial Comunidad de Madrid pilot to national coverage. Currently implemented: nationwide heat-mortality risk (Heat Index from temperature + humidity, weighted by population, across 2 years × 2 emissions scenarios), flood risk (MITECO population exposure, current + projected, plus a separate Copernicus-derived projected river discharge intensity indicator under RCP4.5/8.5), and drought risk (meteorological drought duration + magnitude, current + projected), plus a multi-page Streamlit app (`App.py` + `pages/`) with a sidebar-navigable page per hazard and a combined multi-layer view. Wildfire is planned next; see [Next steps](#next-steps).
+All four hazards are now implemented: nationwide heat-mortality risk (Heat Index from temperature + humidity, weighted by population, across 2 years × 2 emissions scenarios), flood risk (MITECO population exposure, current + projected, plus a separate Copernicus-derived projected river discharge intensity indicator under RCP4.5/8.5), drought risk (meteorological drought duration + magnitude, current + projected), and wildfire risk (fire danger index + high-danger days weighted by population, same structure as heat), plus a login-gated multi-page Streamlit app (`App.py` + `pages/`) with a sidebar-navigable page per hazard and a combined multi-layer view. See [Next steps](#next-steps) for what's left.
 
 ## Approach
 
@@ -15,7 +15,7 @@ Each hazard is modeled independently and stored as its own indicator column(s) o
 | Heat-mortality | Copernicus C3S EURO-CORDEX-derived temperature statistics (max + min) + raw CORDEX humidity (Heat Index) + INE municipal population, projected to 2030/2050 via provincial growth rates |
 | Flood | MITECO SNCZI "riesgo de población" flood-risk maps (T=10/100/500yr) for population exposure + Copernicus/EEA `sis-ecde-climate-indicators` (`flood_recurrence`) for projected river discharge intensity (1-in-2/5/10/50yr, RCP4.5/8.5) |
 | Drought | Copernicus/EEA `sis-ecde-climate-indicators` — meteorological drought duration + magnitude (SPI-3), derived from bias-corrected CORDEX, projected to 2030/2050 |
-| Wildfire | EFFIS historical burnt-area perimeters *(planned)* |
+| Wildfire | Copernicus/EEA `sis-ecde-climate-indicators` — Canadian Fire Weather Index + days/year of high fire danger, weighted by population, projected to 2030/2050 (same structure as heat-mortality) |
 
 ## Project structure
 
@@ -23,13 +23,18 @@ Each hazard is a self-contained folder with its own scripts, raw downloads, gene
 
 ```
 ClimateCosts/
-├── App.py                    # Streamlit entry point: st.navigation router only
+├── App.py                    # Streamlit entry point: login gate + st.navigation router
+├── auth.py                    # Login form + credential verification (see Authentication)
+├── generar_credenciales.py    # Interactive helper to (re)generate login credentials
 ├── common.py                  # Shared map-building/caching helpers used by pages/*.py
+├── .streamlit/
+│   ├── secrets.toml             # Login credentials (hash only) - not tracked in git
+│   └── secrets.toml.example     # Template for secrets.toml
 ├── pages/
 │   ├── heat.py                 # Heat-mortality risk page
 │   ├── flood.py                 # Flood risk page
 │   ├── drought.py                # Drought risk page
-│   ├── wildfire.py                # Placeholder ("not implemented yet")
+│   ├── wildfire.py                # Wildfire risk page
 │   └── combined.py                 # Multi-hazard overlay (toggleable layers)
 ├── test_app.py                # pytest suite for the whole app
 ├── shared/
@@ -53,7 +58,12 @@ ClimateCosts/
 │   ├── input/                  # Raw CDS downloads (drought_raw_{escenario}/)
 │   ├── output/                 # municipios_drought_risk_{año}_{escenario}(.geojson|_lite.geojson)
 │   └── QGIS/
-└── wildfire/                   # input/, output/, QGIS/ — not implemented yet
+└── wildfire/
+    ├── 1_extract_data.py       # Downloads sis-ecde-climate-indicators (fire_weather_index + days_with_high_fire_danger)
+    ├── 2_wildfire_risk.py      # Computes wildfire_risk per municipality (same structure as heat)
+    ├── input/                  # Raw CDS downloads (wildfire_raw_{escenario}/)
+    ├── output/                 # municipios_wildfire_risk_{año}_{escenario}(.geojson|_lite.geojson)
+    └── QGIS/
 ```
 
 All scripts are written to run from the repository root (e.g. `python heat/2_heatwave_risk.py`, not from inside `heat/`), and read/write paths accordingly.
@@ -135,6 +145,21 @@ Output: `drought/output/municipios_drought_risk_{año}_{escenario}.geojson` (ful
 - ~0.25° (~25km) grid resolution is much coarser than heat's ~11km grid, so many neighboring small municipalities share the same underlying grid value — expect visibly "blocky" patterns on the map rather than fine per-municipality gradients.
 - The 20-year window is a modeling choice (not an official CDS aggregation), made to reduce single-year noise; a different window length would shift the exact numbers somewhat, though not the overall trend.
 
+### 6. `wildfire/1_extract_data.py` + `wildfire/2_wildfire_risk.py` — Wildfire risk by municipality
+
+Same structure as heat-mortality risk, deliberately: two raw climate danger variables + projected population, combined in equal thirds into one relative risk proxy, across the same 2030/2050 × RCP4.5/RCP8.5 matrix. The climate variables come from `sis-ecde-climate-indicators` again — `fire_weather_index` (the Canadian Forest Fire Weather Index, a standard fire-danger index) and `days_with_high_fire_danger` (days/year above a high-danger threshold) — this time needing only a GCM (no RCM/ensemble-member/hydrological-model choice, unlike drought/flood-discharge).
+
+`1_extract_data.py` downloads both variables per scenario as one yearly time series (same pattern as drought — no fixed climatological windows like flood's `flood_recurrence`, so the risk script does its own 20-year windowing). `2_wildfire_risk.py` reuses heat's population-projection code verbatim (same INE tables, same province growth-factor extrapolation) and heat's exact fixed-range-normalization formula: `wildfire_risk = (fire_weather_index_norm + high_fire_danger_days_norm + poblacion_norm) / 3`, normalized once across all 4 year×scenario combinations so the score tracks real change over time rather than each year's relative ranking (see heat's Known limitations for why that distinction matters).
+
+Per-municipality extraction found a bug worth noting: unlike heat/drought's grids, this one has NaN cells scattered *within* land area (not just over the ocean), so `rio.clip()` can succeed while still returning all-NaN — no exception is raised, so a naive try/except never falls back to the nearest-point lookup. Fixed by explicitly checking `np.isfinite()` after every clip (and after the nearest-point fallback too) instead of trusting the exception path.
+
+Output: `wildfire/output/municipios_wildfire_risk_{año}_{escenario}.geojson` / `_lite.geojson` (`wildfire_risk`, `fire_weather_index`, `high_fire_danger_days`).
+
+**Known limitations**:
+- A much wider coastal band than heat's is masked out in this dataset (~535 municipalities with no `fire_weather_index` value, vs. heat's ~33) — including some large coastal cities (València, Alacant/Alicante), which is why `pages/wildfire.py`'s "top cities" table can show fewer than 10 rows.
+- Same population-projection caveats as heat (2050 figures are an extrapolation beyond INE's published 2026–2041 range).
+- No wind-direction or fuel-load data is incorporated — this is a *weather-driven fire danger* proxy (matching what the underlying Canadian FWI actually measures), not a full fire-spread or vegetation-fuel model.
+
 ## `App.py` + `pages/` — Interactive multi-page viewer (Streamlit)
 
 A multi-page Streamlit app with a sidebar navigation menu — `App.py` is just a thin router (`st.set_page_config` + `st.navigation`); each hazard is its own page under `pages/`:
@@ -142,8 +167,8 @@ A multi-page Streamlit app with a sidebar navigation menu — `App.py` is just a
 - **`pages/heat.py`** — the heat-mortality view: two side-by-side maps (2030 left, 2050 right) with **Escenario (SSP/RCP)** and **Variable** dropdowns (riesgo de mortalidad por calor / índice de calor diurno / índice de calor nocturno), plus the two summary tables (top 10 increments, top 10 cities) described below.
 - **`pages/flood.py`** — two stacked sections, since flood risk comes from two genuinely different sources (see the pipeline sections above). First, MITECO population exposure: a **Periodo de retorno** dropdown (10/100/500 years) driving two side-by-side maps of projected affected population (2030 left, 2050 right — the flood zones themselves don't change, only who lives in them), plus the same two summary tables below (top 10 increments, top 10 cities). Below that, projected river discharge intensity: **Escenario (RCP)** and **Periodo de retorno** dropdowns (2/5/10/50 years) driving two side-by-side maps of projected discharge for the two available climatological windows (`2011_2040`/`2041_2070`), plus the same two summary tables.
 - **`pages/drought.py`** — same layout again: **Escenario (RCP)** and **Variable** dropdowns (duración de la sequía / magnitud de la sequía), two side-by-side maps (2030/2050), plus the same two summary tables below.
-- **`pages/wildfire.py`** — placeholder (`st.info`) until that hazard is implemented.
-- **`pages/combined.py`** — one map overlaying heat, flood, and drought risk as separate toggleable layers (Folium layer control), so all three can be compared spatially. Wildfire will be added here once implemented; no blended/composite score is computed — "combined" means overlaid layers, not a fabricated single number mixing risks that are on different scales and don't share a common unit.
+- **`pages/wildfire.py`** — same layout as `pages/heat.py`: **Escenario (RCP)** and **Variable** dropdowns (riesgo de incendio forestal / índice de peligro (Canadian FWI) / días de peligro alto), two side-by-side maps (2030/2050), plus the same two summary tables below.
+- **`pages/combined.py`** — one map overlaying heat, flood, drought, and wildfire risk as separate toggleable layers (Folium layer control), so all four can be compared spatially. No blended/composite score is computed — "combined" means overlaid layers, not a fabricated single number mixing risks that are on different scales and don't share a common unit.
 
 The color scale (`vmin`/`vmax`) for the heat page is fixed per variable across both years and both scenarios (not recomputed per view), so color is visually comparable when switching selections — mixing scales across variables wouldn't make sense, since `heat_mortality_risk` is 0–1 while the Heat Index columns are in °C. Municipalities with a null value (see known limitations above) render gray instead of crashing the colormap.
 
@@ -157,7 +182,21 @@ Loading and rendering a national choropleth of ~8,100 municipalities is the slow
 - **Precomputed colors.** Coloring by calling `branca`'s colormap once per feature inside Folium's per-feature `style_function` callback is the single biggest cost (measured: ~3.5s vs ~0.04s for the same 8,132 municipalities). Instead, the hex color for every municipality is computed once, vectorized, as a DataFrame column *before* handing the GeoDataFrame to Folium — the callback then just looks up a precomputed string.
 - **`st.cache_resource` on the built map.** Building a Folium map (styling + serializing ~8,100 polygons to embedded GeoJSON) is expensive regardless of styling approach; re-rendering it identically every time Streamlit reruns the script (which happens on *every* widget interaction, even unrelated ones) would waste that cost repeatedly. Caching the constructed map object per `(archivo, columna, vmin, vmax, ...)` means switching back to an already-seen combination is close to instant. Measured: ~17s cold, ~4s once cached (the residual ~4s is Streamlit's own script re-execution plus recomputing the tables, not map building).
 
-The heat, flood, and drought app-facing geojsons are also pre-simplified to a 0.001°/~111m geometry tolerance (done once, in the processing scripts, not at app load time) — see the known limitation notes in the pipeline sections above for the ~90% size reduction this gets.
+Every hazard's app-facing geojsons are also pre-simplified to a 0.001°/~111m geometry tolerance (done once, in the processing scripts, not at app load time) — see the known limitation notes in the pipeline sections above for the ~90% size reduction this gets.
+
+## Authentication
+
+`App.py` shows a login form (`auth.py`) before any page content, gated by a single username/password pair. The password is never stored or compared in plain text: only a salted **PBKDF2-SHA256** hash (200,000 iterations) lives in `.streamlit/secrets.toml`, which is **not tracked in git** (see `.gitignore`) — only `.streamlit/secrets.toml.example`, a template with no real values, is committed. Comparison uses `hmac.compare_digest` (constant-time) for both the username and the password hash, to avoid leaking timing information about a partial match.
+
+To set up or change the login credentials:
+
+```
+python generar_credenciales.py
+```
+
+This prompts for a username and password (the password isn't echoed to the terminal), generates a fresh random salt, and prints a `[auth]` block to paste into `.streamlit/secrets.toml`.
+
+**Known limitation**: this is a single shared login for a low-stakes internal tool, not a hardened multi-user auth system — there's no rate-limiting on login attempts, and a short numeric PIN (as opposed to a longer password) is trivially brute-forceable *offline* if the hash and salt themselves were ever exposed (e.g. `secrets.toml` accidentally committed). The hashing protects against a leaked file being immediately readable as a password, not against a determined offline attack on a weak PIN — use a longer, less guessable password if that matters for your deployment.
 
 ## Data
 
@@ -172,6 +211,8 @@ The heat, flood, and drought app-facing geojsons are also pre-simplified to a 0.
 - `flood/output/municipios_river_discharge_{epoca}_{escenario}.geojson` / `_lite.geojson` — municipalities with projected river discharge indicators attached, one pair per climatological-window×scenario combination.
 - `drought/input/drought_{escenario}.zip` / `drought_raw_{escenario}/` — raw Copernicus `sis-ecde-climate-indicators` download (one per scenario, covering the full 1970-2098 time series).
 - `drought/output/municipios_drought_risk_{año}_{escenario}.geojson` / `_lite.geojson` — municipalities with drought duration/magnitude indicators attached, one pair per year×scenario combination.
+- `wildfire/input/wildfire_{escenario}.zip` / `wildfire_raw_{escenario}/` — raw Copernicus `sis-ecde-climate-indicators` download (one per scenario, covering the full 1985-2083 time series).
+- `wildfire/output/municipios_wildfire_risk_{año}_{escenario}.geojson` / `_lite.geojson` — municipalities with the wildfire risk indicators attached, one pair per year×scenario combination.
 - `{heat,flood,drought,wildfire}/QGIS/` — QGIS project files for visualizing each hazard.
 
 Large/generated data files, boundary shapefiles, and API credentials are excluded from version control (see `.gitignore`) — they're either downloaded by the scripts above or fetched manually as described below.
@@ -209,7 +250,7 @@ Extract each into `flood/input/t10/`, `flood/input/t100/`, `flood/input/t500/` r
 
 ## Testing
 
-`test_app.py` covers the whole app: smoke tests (every page under `pages/` renders without exceptions, navigated to via `AppTest.switch_page()`), detailed checks on the heat and drought pages across every scenario×variable combination and on flood's river-discharge section across every scenario×return-period combination, and data sanity checks on every hazard's geojsons (expected columns, row counts, value ranges, no more nulls than the documented known-limitations count, majority-positive 2030→2050 heat/drought deltas, flood/discharge risk increasing with return period). Run with:
+`test_app.py` covers the whole app: login tests (form appears when unauthenticated, wrong credentials rejected, the PBKDF2 hashing/comparison mechanism itself verified with synthetic test credentials — never the real production password, which never appears in the test suite), smoke tests (every page under `pages/` renders without exceptions, navigated to via `AppTest.switch_page()`), detailed checks on the heat/drought/wildfire pages across every scenario×variable combination and on flood's river-discharge section across every scenario×return-period combination, and data sanity checks on every hazard's geojsons (expected columns, row counts, value ranges, no more nulls than the documented known-limitations count, majority-positive 2030→2050 deltas, flood/discharge risk increasing with return period). Content tests bypass the login form by pre-seeding `AppTest`'s session state (`autenticado=True`) rather than depending on real or fake credentials. Run with:
 
 ```
 python -m pytest test_app.py -v
@@ -219,7 +260,7 @@ Each unique scenario/variable combination spins up a real `streamlit.testing.v1.
 
 ## Next steps
 
-- Add wildfire risk from EFFIS historical burnt-area data.
+- Add wildfire spread/burnt-area history (e.g. EFFIS) alongside the current weather-driven fire-danger proxy, for a more complete picture than danger-index-only.
 - Merge all hazard indicators into a single national GeoPackage plus a styled QGIS project.
 - Translate hazard indicators into estimated economic costs per municipality.
 - Incorporate building-level exposure data (`madrid_buildings.gpkg`).

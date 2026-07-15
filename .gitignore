@@ -5,6 +5,9 @@
 # Copernicus configuration file
 .cdsapirc
 
+# App login credentials (see .streamlit/secrets.toml.example)
+.streamlit/secrets.toml
+
 # NetCDF files
 *.nc
 

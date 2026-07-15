@@ -10,6 +10,8 @@ import geopandas as gpd
 import pytest
 from streamlit.testing.v1 import AppTest
 
+import auth
+
 PAGINAS = ["pages/heat.py", "pages/flood.py", "pages/drought.py", "pages/wildfire.py", "pages/combined.py"]
 
 ESCENARIOS = ["RCP4.5", "RCP8.5"]
@@ -22,6 +24,11 @@ VARIABLES_SEQUIA = [
     "Duración de la sequía (meses/año)",
     "Magnitud de la sequía (índice SPI-3)",
 ]
+VARIABLES_INCENDIO = [
+    "Riesgo de incendio forestal",
+    "Índice de peligro de incendio (Canadian FWI)",
+    "Días/año de peligro alto",
+]
 AÑOS = [2030, 2050]
 ESCENARIOS_ARCHIVO = ['rcp4_5', 'rcp8_5']
 
@@ -31,10 +38,19 @@ ESCENARIOS_ARCHIVO = ['rcp4_5', 'rcp8_5']
 # indicaría una regresión real, no el hueco de datos ya conocido.
 MAX_NULOS_ESPERADOS = 130
 
+def _sin_login(at):
+    # Los tests de contenido no deben depender de (ni incluir en el repo) la contraseña
+    # real de .streamlit/secrets.toml: en vez de rellenar el formulario, se preseedea
+    # session_state con el mismo flag que pondría un login correcto (ver auth.py). Los
+    # tests que sí ejercitan el mecanismo de login en sí están más abajo, en "--- Login ---".
+    at.session_state['autenticado'] = True
+    return at
+
 
 @functools.lru_cache(maxsize=None)
 def _cargar_app():
     at = AppTest.from_file("App.py", default_timeout=180)
+    _sin_login(at)
     at.run()
     assert not at.exception, f"La app lanzó una excepción: {at.exception}"
     return at
@@ -46,6 +62,7 @@ def _cargar_heat(escenario=None, variable=None):
     # que se cachea por combinación de escenario/variable: varios tests sobre la misma
     # combinación reutilizan la misma ejecución en lugar de relanzarla cada vez.
     at = AppTest.from_file("App.py", default_timeout=180)
+    _sin_login(at)
     at.run()
     at.switch_page("pages/heat.py").run()
     if escenario is not None:
@@ -59,8 +76,23 @@ def _cargar_heat(escenario=None, variable=None):
 @functools.lru_cache(maxsize=None)
 def _cargar_drought(escenario=None, variable=None):
     at = AppTest.from_file("App.py", default_timeout=180)
+    _sin_login(at)
     at.run()
     at.switch_page("pages/drought.py").run()
+    if escenario is not None:
+        at.selectbox[0].set_value(escenario).run()
+    if variable is not None:
+        at.selectbox[1].set_value(variable).run()
+    assert not at.exception, f"La app lanzó una excepción: {at.exception}"
+    return at
+
+
+@functools.lru_cache(maxsize=None)
+def _cargar_wildfire(escenario=None, variable=None):
+    at = AppTest.from_file("App.py", default_timeout=180)
+    _sin_login(at)
+    at.run()
+    at.switch_page("pages/wildfire.py").run()
     if escenario is not None:
         at.selectbox[0].set_value(escenario).run()
     if variable is not None:
@@ -78,10 +110,64 @@ def test_pagina_renderiza_sin_excepciones(pagina):
     assert not at.exception, f"{pagina} lanzó una excepción: {at.exception}"
 
 
-def test_wildfire_muestra_aviso_no_implementado():
-    at = _cargar_app()
-    at.switch_page("pages/wildfire.py").run()
-    assert len(at.info) >= 1, "pages/wildfire.py debería mostrar un st.info de 'no implementado'"
+# --- Login (auth.py) ---
+
+def test_sin_login_la_app_no_muestra_navegacion():
+    at = AppTest.from_file("App.py", default_timeout=180)
+    at.run()
+    assert not at.exception
+    assert len(at.text_input) == 2, "Debería mostrarse el formulario de login (usuario + contraseña)"
+    assert len(at.selectbox) == 0, "No debería poder verse ninguna página sin autenticarse"
+
+
+def test_login_con_credenciales_incorrectas_falla():
+    at = AppTest.from_file("App.py", default_timeout=180)
+    at.run()
+    at.text_input[0].set_value("usuario_incorrecto")
+    at.text_input[1].set_value("contraseña_incorrecta")
+    at.button[0].click().run()
+    assert not at.exception
+    assert len(at.error) >= 1
+    assert len(at.selectbox) == 0, "No debería concederse acceso con credenciales incorrectas"
+
+
+def test_session_state_autenticado_omite_el_formulario_de_login():
+    # Instancia propia (no _cargar_app(), compartida/cacheada y mutada por otros tests vía
+    # switch_page - dependía del orden de ejecución de los tests, ver commit).
+    at = AppTest.from_file("App.py", default_timeout=180)
+    _sin_login(at)
+    at.run()
+    assert not at.exception
+    assert len(at.text_input) == 0, "No debería mostrarse el formulario de login"
+    assert len(at.selectbox) > 0, "Tras autenticarse debería verse la página de calor (por defecto)"
+
+
+def test_hash_contraseña_es_determinista_y_sensible_a_mayusculas():
+    # Usa una contraseña sintética inventada aquí mismo, no la real de producción.
+    salt = "00" * 16
+    h1 = auth._hash_contraseña("clave-de-prueba", salt)
+    h2 = auth._hash_contraseña("clave-de-prueba", salt)
+    h3 = auth._hash_contraseña("Clave-De-Prueba", salt)
+    assert h1 == h2
+    assert h1 != h3
+
+
+def test_credenciales_correctas_con_secretos_sinteticos(monkeypatch):
+    # Verifica el mecanismo de verificación de principio a fin con un usuario/contraseña
+    # sintéticos generados aquí mismo - nunca con la contraseña real, que vive solo en
+    # .streamlit/secrets.toml (no versionado, ver .gitignore).
+    usuario_prueba = "usuario_de_prueba"
+    contraseña_prueba = "clave-sintetica-solo-para-este-test"
+    salt = os.urandom(16).hex()
+    hash_correcto = auth._hash_contraseña(contraseña_prueba, salt)
+
+    monkeypatch.setattr(auth.st, "secrets", {
+        "auth": {"username": usuario_prueba, "password_hash": hash_correcto, "password_salt": salt},
+    })
+
+    assert auth._credenciales_correctas(usuario_prueba, contraseña_prueba)
+    assert not auth._credenciales_correctas(usuario_prueba, "clave-incorrecta")
+    assert not auth._credenciales_correctas("otro_usuario", contraseña_prueba)
 
 
 # --- Página de calor: mismas comprobaciones que antes, sobre pages/heat.py ---
@@ -174,6 +260,54 @@ def test_drought_tabla_top_ciudades_tiene_10_filas_y_madrid_primero(escenario, v
     assert tabla_ciudades['Municipio'].iloc[0] == 'Madrid'  # ciudad más poblada de España
 
 
+# --- Página de incendios: misma estructura que la de calor/sequía ---
+
+def test_wildfire_estado_por_defecto():
+    at = _cargar_wildfire()
+    assert len(at.selectbox) == 2
+    assert at.selectbox[0].value == "RCP4.5"
+    assert at.selectbox[1].value == "Riesgo de incendio forestal"
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS)
+@pytest.mark.parametrize("variable", VARIABLES_INCENDIO)
+def test_wildfire_renderiza_sin_excepciones(escenario, variable):
+    _cargar_wildfire(escenario, variable)
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS)
+@pytest.mark.parametrize("variable", VARIABLES_INCENDIO)
+def test_wildfire_tablas_tienen_las_columnas_esperadas(escenario, variable):
+    at = _cargar_wildfire(escenario, variable)
+    assert len(at.dataframe) == 2, "Deberían mostrarse las 2 tablas (incrementos y ciudades)"
+    for tabla in at.dataframe:
+        columnas = list(tabla.value.columns)
+        assert columnas[0] == "Municipio"
+        assert columnas[-1] == "Incremento"
+        assert len(columnas) == 4
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS)
+@pytest.mark.parametrize("variable", VARIABLES_INCENDIO)
+def test_wildfire_tabla_top_incrementos_tiene_10_filas(escenario, variable):
+    at = _cargar_wildfire(escenario, variable)
+    tabla_incrementos = at.dataframe[0].value
+    assert len(tabla_incrementos) == 10
+    assert tabla_incrementos['Incremento'].is_monotonic_decreasing
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS)
+@pytest.mark.parametrize("variable", VARIABLES_INCENDIO)
+def test_wildfire_tabla_top_ciudades_y_madrid_primero(escenario, variable):
+    at = _cargar_wildfire(escenario, variable)
+    tabla_ciudades = at.dataframe[1].value
+    # A diferencia de heat/drought: València y Alacant/Alicante caen en la franja costera
+    # sin dato de este indicador (ver README, Known limitations), así que solo 8 de las 10
+    # ciudades de TOP10_CIUDADES aparecen aquí.
+    assert len(tabla_ciudades) == 8
+    assert tabla_ciudades['Municipio'].iloc[0] == 'Madrid'  # ciudad más poblada de España
+
+
 # --- Página de inundación ---
 
 def test_flood_renderiza_con_cada_periodo_de_retorno():
@@ -225,6 +359,17 @@ def _ruta_calor(año, escenario):
 
 def _ruta_sequia(año, escenario):
     return f"drought/output/municipios_drought_risk_{año}_{escenario}_lite.geojson"
+
+
+def _ruta_incendio(año, escenario):
+    return f"wildfire/output/municipios_wildfire_risk_{año}_{escenario}_lite.geojson"
+
+
+# Municipios sin wildfire_risk: ~88 mancomunidades sin población (igual que heat) + ~535
+# municipios costeros sin dato de peligro de incendio (la rejilla de sis-ecde-climate-
+# indicators para este indicador enmascara una franja costera bastante más ancha que la de
+# temperatura de heat - ver README, Known limitations).
+MAX_NULOS_ESPERADOS_INCENDIO = 700
 
 
 RUTA_INUNDACION = "flood/output/municipios_inundacion_lite.geojson"
@@ -299,6 +444,62 @@ def test_heat_index_max_siempre_mayor_o_igual_que_min():
             gdf = gpd.read_file(_ruta_calor(año, escenario))
             comparables = gdf.dropna(subset=['heat_index_max_c', 'heat_index_min_c'])
             assert (comparables['heat_index_max_c'] >= comparables['heat_index_min_c']).all()
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("año", AÑOS)
+def test_geojson_incendio_existe_y_tiene_las_columnas_esperadas(año, escenario):
+    ruta = _ruta_incendio(año, escenario)
+    assert os.path.exists(ruta), f"Falta {ruta} - ejecuta wildfire/2_wildfire_risk.py"
+    gdf = gpd.read_file(ruta)
+    for columna in ['NAMEUNIT', 'ine_code', 'wildfire_risk', 'fire_weather_index', 'high_fire_danger_days', 'geometry']:
+        assert columna in gdf.columns
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("año", AÑOS)
+def test_wildfire_risk_nulos_dentro_de_lo_esperado(año, escenario):
+    gdf = gpd.read_file(_ruta_incendio(año, escenario))
+    nulos = int(gdf['wildfire_risk'].isna().sum())
+    assert nulos <= MAX_NULOS_ESPERADOS_INCENDIO, (
+        f"{año}/{escenario}: {nulos} municipios sin wildfire_risk, "
+        f"se esperaban como mucho {MAX_NULOS_ESPERADOS_INCENDIO} (ver README, Known limitations)"
+    )
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("año", AÑOS)
+def test_wildfire_risk_en_rango_0_1(año, escenario):
+    gdf = gpd.read_file(_ruta_incendio(año, escenario))
+    valores = gdf['wildfire_risk'].dropna()
+    assert valores.min() >= 0.0
+    assert valores.max() <= 1.0
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS_ARCHIVO)
+@pytest.mark.parametrize("año", AÑOS)
+def test_high_fire_danger_days_no_supera_365(año, escenario):
+    gdf = gpd.read_file(_ruta_incendio(año, escenario))
+    valores = gdf['high_fire_danger_days'].dropna()
+    assert valores.min() >= 0.0
+    assert valores.max() <= 365.0
+
+
+def test_riesgo_incendio_2030_a_2050_es_mayoritariamente_creciente():
+    # Igual que con heat_mortality_risk: no todos los municipios individuales tienen por
+    # qué empeorar, pero la gran mayoría sí debería bajo cambio climático (verificado:
+    # ~98-100% en la práctica).
+    for escenario in ESCENARIOS_ARCHIVO:
+        g30 = gpd.read_file(_ruta_incendio(2030, escenario)).set_index('ine_code')
+        g50 = gpd.read_file(_ruta_incendio(2050, escenario)).set_index('ine_code')
+        comunes = g30.index.intersection(g50.index)
+        delta = g50.loc[comunes, 'wildfire_risk'] - g30.loc[comunes, 'wildfire_risk']
+        delta = delta.dropna()
+        fraccion_positiva = (delta > 0).mean()
+        assert fraccion_positiva > 0.9, (
+            f"{escenario}: solo el {fraccion_positiva:.0%} de los municipios muestra un "
+            f"incremento de riesgo de incendio 2030->2050 (se esperaba >90%)"
+        )
 
 
 def test_calentamiento_2030_a_2050_es_mayoritariamente_positivo():
