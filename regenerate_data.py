@@ -24,7 +24,11 @@ PASOS = [
     ("Sequía: cálculo de riesgo", "drought/2_drought_risk.py"),
     ("Incendios: descarga de datos", "wildfire/1_extract_data.py"),
     ("Incendios: cálculo de riesgo", "wildfire/2_wildfire_risk.py"),
-    ("Riesgo combinado (25% cada hazard)", "combined/1_combined_risk.py"),
+    ("Inundación costera: descarga de datos", "coastal_flood/1_extract_data.py"),
+    ("Inundación costera: cálculo de riesgo", "coastal_flood/2_coastal_flood_risk.py"),
+    ("Coste eléctrico: descarga de datos", "electricity/1_extract_data.py"),
+    ("Coste eléctrico: cálculo del modelo de orden de mérito", "electricity/2_electricity_cost.py"),
+    ("Riesgo combinado (40/30/15/15 por hazard)", "combined/1_combined_risk.py"),
     ("Impacto financiero (proxy en euros)", "combined/2_financial_impact.py"),
 ]
 

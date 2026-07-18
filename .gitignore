@@ -11,6 +11,9 @@
 # NetCDF files
 *.nc
 
+# Generated data tables (e.g. electricity/output/electricity_cost.csv)
+*.csv
+
 # GIS files
 *.shp
 *.shx

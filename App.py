@@ -19,12 +19,16 @@ paginas = st.navigation(
         "Por riesgo:": [
             st.Page("pages/heat.py", title="Calor", icon="🌡️", default=True),
             st.Page("pages/flood.py", title="Inundación", icon="🌊"),
+            st.Page("pages/coastal_flood.py", title="Inundación costera", icon="🏖️"),
             st.Page("pages/drought.py", title="Sequía", icon="🌵"),
             st.Page("pages/wildfire.py", title="Incendios", icon="🔥"),
         ],
         "Combinado:": [
             st.Page("pages/combined_risk.py", title="Riesgo combinado", icon="🗺️"),
             st.Page("pages/financial_impact.py", title="Impacto financiero", icon="💶"),
+        ],
+        "Nacional:": [
+            st.Page("pages/electricity_cost.py", title="Coste eléctrico", icon="⚡"),
         ]
     }
 )

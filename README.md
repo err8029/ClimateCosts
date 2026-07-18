@@ -1,21 +1,23 @@
 # ClimateCosts
 
-Modeling the impact of climate change — heat, flooding, wildfire, and drought — on every municipality in Spain, using official climate and hazard data, for visualization in QGIS.
+Modeling the impact of climate change — heat, flooding, coastal flooding, wildfire, drought, and electricity system cost — on every municipality in Spain, using official climate and hazard data, for visualization in QGIS.
 
 ## Status
 
-All four hazards are now implemented: nationwide heat-mortality risk (Heat Index from temperature + humidity, weighted by population, across 2 years × 2 emissions scenarios), flood risk (MITECO population exposure, current + projected, plus a separate Copernicus-derived projected river discharge intensity indicator under RCP4.5/8.5), drought risk (meteorological drought duration + magnitude, current + projected), and wildfire risk (fire danger index + high-danger days weighted by population, same structure as heat) — plus a blended `combined_risk` score (40/30/15/15 weight by hazard, reweighted when a component is missing rather than going null) and a `financial_impact_eur`/`financial_impact_eur_per_capita` proxy (GDP-per-capita-based economic exposure, same hazard weighting — see the Pipeline section), all behind a login-gated multi-page Streamlit app (`App.py` + `pages/`) with a sidebar-navigable page per hazard, a combined-risk page (+ raw overlay view), and a financial-impact page. See [Next steps](#next-steps) for what's left.
+All five municipal hazards are implemented: nationwide heat-mortality risk (Heat Index from temperature + humidity, weighted by population, across 2 years × 2 emissions scenarios), flood risk (MITECO population exposure, current + projected, plus a separate Copernicus-derived projected river discharge intensity indicator under RCP4.5/8.5), coastal flood risk (projected sea-level rise at ~658 genuinely coastal municipalities, SSP5-8.5 only), drought risk (meteorological drought duration + magnitude, current + projected), and wildfire risk (fire danger index + high-danger days weighted by population, same structure as heat) — plus a blended `combined_risk` score (40/30/15/15 weight by hazard, reweighted when a component is missing rather than going null) and a `financial_impact_eur`/`financial_impact_eur_per_capita` proxy (GDP-per-capita-based economic exposure, same hazard weighting). There's also one **national** (non-municipal) indicator: a simplified merit-order estimate of additional Spanish electricity-system cost under climate change. All behind a login-gated multi-page Streamlit app (`App.py` + `pages/`) with a sidebar-navigable page per hazard, a combined-risk page (+ raw overlay view), a financial-impact page, and a national electricity-cost page. See [Next steps](#next-steps) for what's left.
 
 ## Approach
 
-Each hazard is modeled independently and stored as its own indicator column(s) on the national municipal boundary layer, rather than blended into a single score — so each can be toggled and styled separately in QGIS. Where an official hazard dataset exists (flood zones, fire history, drought indices), that's used in preference to deriving risk purely from raw climate projections.
+Each hazard is modeled independently and stored as its own indicator column(s) on the national municipal boundary layer, rather than blended into a single score — so each can be toggled and styled separately in QGIS. Where an official hazard dataset exists (flood zones, fire history, drought indices), that's used in preference to deriving risk purely from raw climate projections. Coastal flood risk and electricity system cost are **not yet folded into `combined_risk`/`financial_impact_eur`** — see their own pipeline sections for why (coastal flood's coverage is too geographically narrow to weight fairly against national hazards without more research; electricity cost is a national, not municipal, quantity and doesn't fit the per-municipality blend architecturally).
 
 | Hazard | Source |
 |---|---|
 | Heat-mortality | Copernicus C3S EURO-CORDEX-derived temperature statistics (max + min) + raw CORDEX humidity (Heat Index) + INE municipal population, projected to 2030/2050 via provincial growth rates |
 | Flood | MITECO SNCZI "riesgo de población" flood-risk maps (T=10/100/500yr) for population exposure + Copernicus/EEA `sis-ecde-climate-indicators` (`flood_recurrence`) for projected river discharge intensity (1-in-2/5/10/50yr, RCP4.5/8.5) |
+| Coastal flood | Copernicus/EEA `sis-ecde-climate-indicators` (`relative_sea_level_rise`, GTSMv3 tide-gauge stations) — projected sea-level rise at coastal municipalities, SSP5-8.5 only |
 | Drought | Copernicus/EEA `sis-ecde-climate-indicators` — meteorological drought duration + magnitude (SPI-3), derived from bias-corrected CORDEX, projected to 2030/2050 |
 | Wildfire | Copernicus/EEA `sis-ecde-climate-indicators` — Canadian Fire Weather Index + days/year of high fire danger, weighted by population, projected to 2030/2050 (same structure as heat-mortality) |
+| Electricity system cost *(national)* | Copernicus C3S Energy `sis-energy-derived-projections` (demand + hydro/solar/wind generation, RCP4.5/8.5) fed into a simplified merit-order cost model |
 
 ## Project structure
 
@@ -35,10 +37,12 @@ ClimateCosts/
 ├── pages/
 │   ├── heat.py                 # Heat-mortality risk page
 │   ├── flood.py                 # Flood risk page
+│   ├── coastal_flood.py          # Coastal flood (sea-level rise) risk page
 │   ├── drought.py                # Drought risk page
 │   ├── wildfire.py                # Wildfire risk page
 │   ├── combined_risk.py            # Blended combined_risk page + multi-hazard overlay
-│   └── financial_impact.py          # financial_impact_eur page (total + per-capita)
+│   ├── financial_impact.py          # financial_impact_eur page (total + per-capita)
+│   └── electricity_cost.py           # National electricity system cost page (no map)
 ├── test_app.py                # pytest suite for the whole app
 ├── shared/
 │   └── boundaries/            # National municipal boundary shapefile (CNIG), shared by every hazard
@@ -67,8 +71,19 @@ ClimateCosts/
 │   ├── input/                  # Raw CDS downloads (wildfire_raw_{escenario}/)
 │   ├── output/                 # municipios_wildfire_risk_{año}_{escenario}(.geojson|_lite.geojson)
 │   └── QGIS/
+├── coastal_flood/
+│   ├── 1_extract_data.py       # Downloads sis-ecde-climate-indicators (relative_sea_level_rise)
+│   ├── 2_coastal_flood_risk.py # Nearest-tide-station join per municipality (no raster clip)
+│   ├── input/                  # Raw CDS download (coastal_flood_raw_ssp5_8_5/)
+│   ├── output/                 # municipios_coastal_flood_risk_{año}(.geojson|_lite.geojson)
+│   └── QGIS/
+├── electricity/
+│   ├── 1_extract_data.py       # Downloads sis-energy-derived-projections (Spain, country-level)
+│   ├── 2_electricity_cost.py   # Merit-order cost model -> electricity_cost.csv (national, no geometry)
+│   ├── input/                  # Raw CDS downloads (electricity_raw_{grupo}_{escenario}/)
+│   └── output/                 # electricity_cost.csv
 └── combined/
-    ├── 1_combined_risk.py      # Blends all 4 hazards (40/30/15/15) into combined_risk
+    ├── 1_combined_risk.py      # Blends 4 municipal hazards (40/30/15/15) into combined_risk
     ├── 2_financial_impact.py   # Translates combined_risk into euro proxies (total + per-capita)
     └── output/                 # municipios_combined_risk_{...} + municipios_financial_impact_{...}
 ```
@@ -137,7 +152,23 @@ Output: `flood/output/municipios_river_discharge_{epoca}_{escenario}.geojson` / 
 - The 3 available windows are fixed by Copernicus, not chosen by this project; using the first two as a "near/mid-century" comparison pair means skipping the ~2071–2100 window entirely to keep the same two-map layout used everywhere else in the app.
 - `flood_recurrence` measures the same hazard-defining discharge across the whole country with one model chain — it hasn't been calibrated against the specific rivers behind MITECO's Spanish flood maps, so the two indicators are not on a comparable scale or methodology, only complementary in spirit.
 
-### 5. `drought/1_extract_data.py` + `drought/2_drought_risk.py` — Drought risk by municipality
+### 5. `coastal_flood/1_extract_data.py` + `coastal_flood/2_coastal_flood_risk.py` — Coastal flood risk by municipality
+
+Uses `sis-ecde-climate-indicators` again, this time `relative_sea_level_rise` — annual mean sea level (m) from the GTSMv3 tide/surge model, at ~1,300 individual tide-gauge station points along Spain's coastline. This indicator is structurally different from every other hazard in this project in two ways, both worth knowing before touching this code:
+
+1. **Only SSP5-8.5 is available** (CMIP6 scenario naming) — there is no RCP4.5-equivalent for sea-level projections in this dataset. `pages/coastal_flood.py` has no Escenario dropdown as a result; the page and its output files aren't split by scenario at all.
+2. **The data is a scattered set of station points, not a regular grid** — every other hazard in this project uses `rio.clip()` against a raster; that doesn't apply here. Instead, `2_coastal_flood_risk.py` builds a `GeoDataFrame` of station points and uses `geopandas.sjoin_nearest` (reprojected to EPSG:3857 for a metric distance) to assign each municipality its *nearest* station, **only if that station is within 10km**. Municipalities farther than that are left null — not a data gap, a deliberate "this municipality isn't coastal" cutoff, calibrated empirically (658 of Spain's 8,132 municipalities fall within it; INE/MITECO's own "municipios costeros" lists are in a broadly similar range, though not identical since this project's threshold isn't the official definition).
+
+Output: `coastal_flood/output/municipios_coastal_flood_risk_{año}.geojson` / `_lite.geojson` (`sea_level_rise_m`), for 2030 and 2050 only (no scenario axis).
+
+`pages/coastal_flood.py` also uses its own **top-10-coastal-cities** list (Barcelona, València, Málaga, Palma, Alacant/Alicante, Vigo, L'Hospitalet, Gijón, Elx/Elche, Badalona — by population, restricted to municipalities that actually have a value) rather than reusing the national top-10 list every other page shares: most of the national top 10 (Madrid, Zaragoza, Murcia, Bilbao) aren't within 10km of a tide station and would leave half the table empty.
+
+**Known limitations**:
+- The 10km "coastal" cutoff is a modeling choice calibrated by this project, not an official boundary — a different threshold would include/exclude a different set of municipalities, particularly around estuaries (Bilbao, notably, falls just outside it).
+- Sea-level rise alone doesn't capture storm surge or extreme-event flooding (Copernicus's `extreme_sea_level` variable covers that, but only reaches 2036 in this dataset, too short for this project's 2030/2050 comparison, and needs a GCM choice this indicator doesn't — see the script's comments for why it wasn't used).
+- Not yet integrated into `combined_risk`/`financial_impact_eur` — seven of every eight municipalities have no value for this hazard at all, and weighting it fairly against hazards with full national coverage needs more thought than a straightforward reweight (see `combined/1_combined_risk.py`'s Known limitations).
+
+### 6. `drought/1_extract_data.py` + `drought/2_drought_risk.py` — Drought risk by municipality
 
 The official CSIC SPEIbase (SPEI-6/SPEI-12) is historical-only — there's no future/projected version of it, and its download portal (`digital.csic.es`) blocks scripted access. Instead this uses Copernicus's `sis-ecde-climate-indicators` dataset, which provides **duration** (months/year in drought) and **magnitude** (severity) of meteorological drought based on **SPI-3** (3-month Standardised Precipitation Index — precipitation deficit only, *not* SPEI, which also factors in evapotranspiration), derived from bias-corrected CORDEX and covering 1970–2098 under RCP4.5/RCP8.5. This is a genuine tradeoff: an index at a different timescale than originally wanted, in exchange for actual official 2030/2050 projections instead of a from-scratch homemade proxy.
 
@@ -152,7 +183,7 @@ Output: `drought/output/municipios_drought_risk_{año}_{escenario}.geojson` (ful
 - ~0.25° (~25km) grid resolution is much coarser than heat's ~11km grid, so many neighboring small municipalities share the same underlying grid value — expect visibly "blocky" patterns on the map rather than fine per-municipality gradients.
 - The 20-year window is a modeling choice (not an official CDS aggregation), made to reduce single-year noise; a different window length would shift the exact numbers somewhat, though not the overall trend.
 
-### 6. `wildfire/1_extract_data.py` + `wildfire/2_wildfire_risk.py` — Wildfire risk by municipality
+### 7. `wildfire/1_extract_data.py` + `wildfire/2_wildfire_risk.py` — Wildfire risk by municipality
 
 Same structure as heat-mortality risk, deliberately: two raw climate danger variables + projected population, combined in equal thirds into one relative risk proxy, across the same 2030/2050 × RCP4.5/RCP8.5 matrix. The climate variables come from `sis-ecde-climate-indicators` again — `fire_weather_index` (the Canadian Forest Fire Weather Index, a standard fire-danger index) and `days_with_high_fire_danger` (days/year above a high-danger threshold) — this time needing only a GCM (no RCM/ensemble-member/hydrological-model choice, unlike drought/flood-discharge).
 
@@ -167,7 +198,7 @@ Output: `wildfire/output/municipios_wildfire_risk_{año}_{escenario}.geojson` / 
 - Same population-projection caveats as heat (2050 figures are an extrapolation beyond INE's published 2026–2041 range).
 - No wind-direction or fuel-load data is incorporated — this is a *weather-driven fire danger* proxy (matching what the underlying Canadian FWI actually measures), not a full fire-spread or vegetation-fuel model.
 
-### 7. `combined/1_combined_risk.py` — Combined risk (weighted by hazard)
+### 8. `combined/1_combined_risk.py` — Combined risk (weighted by hazard)
 
 Joins the outputs of all 4 hazard pipelines above and blends them into one `combined_risk` score per municipality, per year×scenario. Each hazard contributes exactly one representative variable, weighted **40% heat / 30% flood / 15% drought / 15% wildfire** (not equal weights — see the rationale below, shared with `financial_impact_eur`):
 
@@ -189,7 +220,7 @@ Output: `combined/output/municipios_combined_risk_{año}_{escenario}.geojson` / 
 - The 40/30/15/15 weighting is a defensible *relative ordering* grounded in published research (see `financial_impact_eur` below for the sources), not a precision-fitted regression — it does not claim to know the exact economic cost per unit of physical risk for each hazard, only their rough relative order of magnitude.
 - When components are missing and weights get rescaled, a municipality's score reflects *only* the hazards with data for it — comparing such a municipality directly against one with all 4 components should be done with that caveat in mind.
 
-### 8. `combined/2_financial_impact.py` — Financial impact proxy (€)
+### 9. `combined/2_financial_impact.py` — Financial impact proxy (€)
 
 Translates `combined_risk` into two euro figures per municipality — **total** exposure and **per-capita** exposure — because they answer different questions and rank municipalities very differently:
 
@@ -214,16 +245,41 @@ Output: `combined/output/municipios_financial_impact_{año}_{escenario}.geojson`
 - The per-capita figure is identical for every municipality in the same province with the same `combined_risk` — it inherits the province-level GDP extrapolation's inability to distinguish a provincial capital from a small town in the same province.
 - Only null for the ~88 mancomunidades without an INE population figure (same gap as `heat_mortality_risk`) — `combined_risk`'s own reweighting means the wildfire coastal gap no longer propagates here.
 
+### 10. `electricity/1_extract_data.py` + `electricity/2_electricity_cost.py` — Electricity system cost (national)
+
+The one indicator in this project that is **not per-municipality** — Spain has a single wholesale electricity market (MIBEL), so "electricity cost by municipality" isn't a meaningful thing to compute, and this pipeline doesn't try to. It produces one row per year×scenario in a plain CSV (`electricity/output/electricity_cost.csv`), no geometry, no geojson.
+
+Uses a different Copernicus dataset than every other hazard: `sis-energy-derived-projections` (C3S Energy), at `country_level` spatial aggregation for Spain, giving projected annual `electricity_demand`, `hydro_power_generation_reservoirs`, and `hydro_power_generation_rivers` directly in MWh, plus `solar_photovoltaic_power_generation` and `wind_power_generation_onshore` as **capacity factors** (0–1) — the energy-in-MWh product type isn't valid for solar/wind at this combination of GCM/RCM, only `capacity_factor_ratio` is (discovered the same way as every other dataset quirk in this project: the CDS API's `constraints` endpoint, not the documentation). Same 20-year climatological windowing as drought/wildfire (raw annual values are just as noisy here).
+
+**The cost model** is a deliberately simplified "merit order" approximation, chosen over a flat price-multiplier or a full capacity-expansion/dispatch model as a middle ground between the two — full dispatch models like the one behind JRC PESETA IV's energy-supply task require dedicated power-system-modeling software (PLEXOS, Dispa-SET, PyPSA), not a script:
+
+```
+residual_mwh = max(0, demanda − hidro − solar − eólica − nuclear_fijo)
+coste_sistema_eur = residual_mwh × precio_referencia_ccgt
+```
+
+Solar/wind capacity factors are converted to MWh using Spain's actual installed capacity at end-2024 (REE: wind ~32.1 GW, solar PV ~32.4 GW of 129 GW total) — **held constant**, same reasoning as `financial_impact_eur`'s constant GDP-per-capita: the climate indicator already captures how the *existing* fleet's efficiency changes with climate, and projecting new capacity build-out on top would stack a second speculative assumption onto the first. Nuclear generation is likewise held fixed (~55 TWh/year, ~7.1GW/7-reactor fleet at its typically stable ~85–90% capacity factor) since nuclear output is essentially weather-independent at this level of approximation. The residual — demand not covered by these near-zero-marginal-cost sources — is priced at a single reference marginal cost (€90/MWh) representing combined-cycle gas (CCGT), which sets Spain's wholesale price in the large majority of hours (MIBEL is a marginal-pricing market).
+
+Output: `electricity/output/electricity_cost.csv`, columns `año`, `escenario`, `demanda_mwh`, `hidro_mwh`, `solar_mwh`, `eolica_mwh`, `nuclear_mwh`, `residual_mwh`, `coste_sistema_eur`. `pages/electricity_cost.py` shows this via `st.metric` cards and a bar chart, not a map — there's no geography to map.
+
+**Known limitations — read before treating this as a real cost forecast**:
+- This is a single-band merit-order approximation, not a dispatch/unit-commitment model: no interconnection with France/Portugal, no storage/batteries, no distinction between "normal" and "extreme peak" pricing within the residual, no representation of coal/cogeneration as separate bands from CCGT.
+- The €90/MWh CCGT reference price is a single point estimate from a real but wide range (Spain 2025 averages cited in research ranged ~€87–148/MWh) — it does not itself vary by scenario or year, so all of the year-over-year and scenario-over-scenario variation in the results comes from the physical residual-demand term, not from any assumed price trend.
+- Nuclear and installed renewable capacity are both held constant through 2050 — real capacity additions (or nuclear phase-out, which Spain has scheduled starting 2027) would materially change these numbers and aren't modeled.
+- Not integrated into `combined_risk`/`financial_impact_eur` (see the Approach section) — shown as its own standalone national page instead.
+
 ## `App.py` + `pages/` — Interactive multi-page viewer (Streamlit)
 
 A multi-page Streamlit app with a sidebar navigation menu — `App.py` is just a thin router (`st.set_page_config` + `st.navigation`); each hazard is its own page under `pages/`:
 
 - **`pages/heat.py`** — the heat-mortality view: two side-by-side maps (2030 left, 2050 right) with **Escenario (SSP/RCP)** and **Variable** dropdowns (riesgo de mortalidad por calor / índice de calor diurno / índice de calor nocturno), plus the two summary tables (top 10 increments, top 10 cities) described below.
 - **`pages/flood.py`** — two stacked sections, since flood risk comes from two genuinely different sources (see the pipeline sections above). First, MITECO population exposure: a **Periodo de retorno** dropdown (10/100/500 years) driving two side-by-side maps of projected affected population (2030 left, 2050 right — the flood zones themselves don't change, only who lives in them), plus the same two summary tables below (top 10 increments, top 10 cities). Below that, projected river discharge intensity: **Escenario (RCP)** and **Periodo de retorno** dropdowns (2/5/10/50 years) driving two side-by-side maps of projected discharge for the two available climatological windows (`2011_2040`/`2041_2070`), plus the same two summary tables.
+- **`pages/coastal_flood.py`** — no dropdowns at all (only SSP5-8.5 exists for this indicator — see the pipeline section above): two side-by-side maps of projected sea-level rise (2030/2050), plus the same two summary tables, except the "top cities" table uses a **coastal-specific** top-10 list (Barcelona, València, Málaga...) instead of the national one every other page shares, since most of the national top 10 aren't near a tide station.
 - **`pages/drought.py`** — same layout again: **Escenario (RCP)** and **Variable** dropdowns (duración de la sequía / magnitud de la sequía), two side-by-side maps (2030/2050), plus the same two summary tables below.
 - **`pages/wildfire.py`** — same layout as `pages/heat.py`: **Escenario (RCP)** and **Variable** dropdowns (riesgo de incendio forestal / índice de peligro (Canadian FWI) / días de peligro alto), two side-by-side maps (2030/2050), plus the same two summary tables below.
 - **`pages/combined_risk.py`** — two stacked sections. First, the blended `combined_risk` score (see the pipeline section above): an **Escenario (RCP)** dropdown driving two side-by-side maps (2030/2050), plus the same two summary tables (top 10 increments, top 10 cities) as every other hazard page. Below that, the raw overlay view: heat, flood, drought, and wildfire risk as separate toggleable layers (Folium layer control) on one map, so the 4 raw layers can be compared spatially side by side — a different, complementary view from the blended score above, not a duplicate of it.
 - **`pages/financial_impact.py`** — its own page (separate from the risk score, since it answers a different question). **Escenario (RCP)** and **Variable** dropdowns — the Variable choice switches between "Impacto total (€)" (colored on a **log scale**, since a few large cities are orders of magnitude above everywhere else — a linear scale would leave almost the entire map one flat color) and "Impacto per cápita (€/habitante)" (linear scale — without total's population-driven long tail, linear already spreads the contrast well). Same two-map layout as every other page; the tables add two things beyond the usual 2030/2050/increment columns: the underlying **GDP forecast** (total PIB or PIB per cápita, matching whichever Variable is selected) for context next to the impact figure, and an **"Incremento riesgo (pp)"** column — percentage points of `combined_risk` itself (2050 minus 2030), which isolates how much the underlying *risk share* grew from how much the € figures grew simply because the GDP base itself grew.
+- **`pages/electricity_cost.py`** — the one page with **no map at all** (see the pipeline section above — this indicator is national, not municipal). An **Escenario (RCP)** dropdown drives two `st.metric` cards (2030/2050 additional system cost, with a delta), a bar chart comparing both scenarios across both years, and a breakdown table of the underlying demand/generation/residual figures in TWh/year.
 
 The color scale (`vmin`/`vmax`) for the heat page is fixed per variable across both years and both scenarios (not recomputed per view), so color is visually comparable when switching selections — mixing scales across variables wouldn't make sense, since `heat_mortality_risk` is 0–1 while the Heat Index columns are in °C. Municipalities with a null value (see known limitations above) render gray instead of crashing the colormap.
 
@@ -264,13 +320,17 @@ This prompts for a username and password (the password isn't echoed to the termi
 - `flood/output/municipios_inundacion.geojson` / `_lite.geojson` — municipalities with flood risk indicators attached (full and app-optimized versions).
 - `flood/input/discharge_{periodo}_{escenario}.zip` / `discharge_raw_{periodo}_{escenario}/` — raw Copernicus `sis-ecde-climate-indicators` (`flood_recurrence`) download, one per return-period×scenario combination (8 total).
 - `flood/output/municipios_river_discharge_{epoca}_{escenario}.geojson` / `_lite.geojson` — municipalities with projected river discharge indicators attached, one pair per climatological-window×scenario combination.
+- `coastal_flood/input/coastal_flood_ssp5_8_5.zip` / `coastal_flood_raw_ssp5_8_5/` — raw Copernicus `sis-ecde-climate-indicators` (`relative_sea_level_rise`) download (single scenario, single download, covering all GTSMv3 stations 1950-2050).
+- `coastal_flood/output/municipios_coastal_flood_risk_{año}.geojson` / `_lite.geojson` — municipalities within 10km of a tide station, with `sea_level_rise_m` attached (all others null by design), one pair per year (no scenario axis).
 - `drought/input/drought_{escenario}.zip` / `drought_raw_{escenario}/` — raw Copernicus `sis-ecde-climate-indicators` download (one per scenario, covering the full 1970-2098 time series).
 - `drought/output/municipios_drought_risk_{año}_{escenario}.geojson` / `_lite.geojson` — municipalities with drought duration/magnitude indicators attached, one pair per year×scenario combination.
 - `wildfire/input/wildfire_{escenario}.zip` / `wildfire_raw_{escenario}/` — raw Copernicus `sis-ecde-climate-indicators` download (one per scenario, covering the full 1985-2083 time series).
 - `wildfire/output/municipios_wildfire_risk_{año}_{escenario}.geojson` / `_lite.geojson` — municipalities with the wildfire risk indicators attached, one pair per year×scenario combination.
 - `combined/output/municipios_combined_risk_{año}_{escenario}.geojson` / `_lite.geojson` — municipalities with the blended `combined_risk` score attached, one pair per year×scenario combination.
 - `combined/output/municipios_financial_impact_{año}_{escenario}.geojson` / `_lite.geojson` — municipalities with the `financial_impact_eur` and `financial_impact_eur_per_capita` proxies attached, one pair per year×scenario combination.
-- `{heat,flood,drought,wildfire}/QGIS/` — QGIS project files for visualizing each hazard.
+- `electricity/input/electricity_{grupo}_{escenario}.zip` / `electricity_raw_{grupo}_{escenario}/` — raw Copernicus `sis-energy-derived-projections` downloads, split by `grupo` (`energia` = demand + hydro in MWh, `factor_capacidad` = solar/wind as 0-1 capacity factors) × scenario (4 total).
+- `electricity/output/electricity_cost.csv` — one row per year×scenario (4 total) with the merit-order model's inputs and result; no geometry, this indicator is national.
+- `{heat,flood,coastal_flood,drought,wildfire}/QGIS/` — QGIS project files for visualizing each hazard.
 
 Large/generated data files, boundary shapefiles, and API credentials are excluded from version control (see `.gitignore`) — they're either downloaded by the scripts above or fetched manually as described below.
 
@@ -319,7 +379,7 @@ Install with `pip install -r requirements.txt`, or manually:
 
 ## Testing
 
-`test_app.py` covers the whole app: login tests (form appears when unauthenticated, wrong credentials rejected, the PBKDF2 hashing/comparison mechanism itself verified with synthetic test credentials — never the real production password, which never appears in the test suite), smoke tests (every page under `pages/` renders without exceptions, navigated to via `AppTest.switch_page()`), detailed checks on the heat/drought/wildfire/combined-risk/financial-impact pages across every scenario×variable combination and on flood's river-discharge section across every scenario×return-period combination, and data sanity checks on every hazard's geojsons (expected columns, row counts, value ranges, no more nulls than the documented known-limitations count, majority-positive 2030→2050 deltas, flood/discharge risk increasing with return period, `combined_risk` verified to equal its exact weighted-sum formula, `financial_impact_eur` verified non-negative and never exceeding its own `valor_economico_eur` base). Content tests bypass the login form by pre-seeding `AppTest`'s session state (`autenticado=True`) rather than depending on real or fake credentials. Run with:
+`test_app.py` covers the whole app: login tests (form appears when unauthenticated, wrong credentials rejected, the PBKDF2 hashing/comparison mechanism itself verified with synthetic test credentials — never the real production password, which never appears in the test suite), smoke tests (every page under `pages/` renders without exceptions, navigated to via `AppTest.switch_page()`), detailed checks on the heat/drought/wildfire/combined-risk/financial-impact pages across every scenario×variable combination and on flood's river-discharge section across every scenario×return-period combination, and data sanity checks on every hazard's geojsons (expected columns, row counts, value ranges, no more nulls than the documented known-limitations count, majority-positive 2030→2050 deltas, flood/discharge risk increasing with return period, `combined_risk` verified to equal its exact weighted-sum formula, `financial_impact_eur` verified non-negative and never exceeding its own `valor_economico_eur` base). Coastal flood is checked with its own tests (only ~658 municipalities have a value, growth is checked as *almost always* strictly positive rather than *majority*, since sea-level rise is a smooth trend, not noisy weather). Electricity cost is checked directly on `electricity_cost.csv` (non-negative, formula matches `residual_mwh × 90`) since it has no per-municipality geometry to check. Content tests bypass the login form by pre-seeding `AppTest`'s session state (`autenticado=True`) rather than depending on real or fake credentials. Run with:
 
 ```
 python -m pytest test_app.py -v
@@ -333,6 +393,9 @@ Each unique scenario/variable combination spins up a real `streamlit.testing.v1.
 - Merge all hazard indicators into a single national GeoPackage plus a styled QGIS project.
 - Refine `financial_impact_eur`'s hazard cost coefficients (currently 40/30/15/15, grounded in JRC PESETA IV but not precisely calibrated to Spain — see Known limitations) as more Spain-specific, same-horizon loss data becomes available.
 - Incorporate building-level exposure data (`madrid_buildings.gpkg`).
+- Decide how (or whether) to fold coastal flood risk into `combined_risk` — its coverage is far narrower than the other 4 hazards (658 vs. ~8,000+ municipalities), so a straightforward reweight would need more thought than the existing mechanism to avoid overstating coastal risk's contribution wherever it does have data.
+- Replace `electricity/2_electricity_cost.py`'s single-band merit-order approximation with a proper supply-cost curve (multiple technology bands, not one CCGT reference price) using REE esios or ENTSO-E Transparency Platform data — both are free and scriptable but need a personal API token requested by email, not obtainable without manual signup.
+- Extend the merit-order model to also account for scheduled nuclear phase-out (Spain's fleet is due to start retiring in 2027) instead of holding nuclear generation constant through 2050.
 
 ## License
 

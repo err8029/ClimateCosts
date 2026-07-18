@@ -7,12 +7,16 @@ import functools
 import os
 
 import geopandas as gpd
+import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
 import auth
 
-PAGINAS = ["pages/heat.py", "pages/flood.py", "pages/drought.py", "pages/wildfire.py", "pages/combined_risk.py", "pages/financial_impact.py"]
+PAGINAS = [
+    "pages/heat.py", "pages/flood.py", "pages/coastal_flood.py", "pages/drought.py", "pages/wildfire.py",
+    "pages/combined_risk.py", "pages/financial_impact.py", "pages/electricity_cost.py",
+]
 
 ESCENARIOS = ["RCP4.5", "RCP8.5"]
 VARIABLES_CALOR = [
@@ -129,6 +133,30 @@ def _cargar_impacto(escenario=None, variable=None):
         at.selectbox[0].set_value(escenario).run()
     if variable is not None:
         at.selectbox[1].set_value(variable).run()
+    assert not at.exception, f"La app lanzó una excepción: {at.exception}"
+    return at
+
+
+@functools.lru_cache(maxsize=None)
+def _cargar_costa():
+    # Sin escenario/variable: pages/coastal_flood.py no tiene selectores (un único
+    # escenario SSP5-8.5 disponible, ver README).
+    at = AppTest.from_file("App.py", default_timeout=200)
+    _sin_login(at)
+    at.run()
+    at.switch_page("pages/coastal_flood.py").run()
+    assert not at.exception, f"La app lanzó una excepción: {at.exception}"
+    return at
+
+
+@functools.lru_cache(maxsize=None)
+def _cargar_electricidad(escenario=None):
+    at = AppTest.from_file("App.py", default_timeout=100)
+    _sin_login(at)
+    at.run()
+    at.switch_page("pages/electricity_cost.py").run()
+    if escenario is not None:
+        at.selectbox[0].set_value(escenario).run()
     assert not at.exception, f"La app lanzó una excepción: {at.exception}"
     return at
 
@@ -439,6 +467,55 @@ def test_impacto_tabla_top_ciudades_tiene_10_filas_y_madrid_primero(escenario, v
     assert tabla_ciudades['Municipio'].iloc[0] == 'Madrid'  # ciudad más poblada de España
 
 
+# --- Página pages/coastal_flood.py (sin selectores: un único escenario SSP5-8.5) ---
+
+def test_costa_renderiza_sin_excepciones():
+    _cargar_costa()
+
+
+def test_costa_tablas_tienen_las_columnas_esperadas():
+    at = _cargar_costa()
+    assert len(at.dataframe) == 2, "Deberían mostrarse las 2 tablas (incrementos y ciudades costeras)"
+    columnas_esperadas = ['Municipio', 'Subida nivel del mar 2030 (m)', 'Subida nivel del mar 2050 (m)', 'Incremento (m)']
+    for tabla in at.dataframe:
+        assert list(tabla.value.columns) == columnas_esperadas
+
+
+def test_costa_tabla_top_incrementos_tiene_10_filas():
+    at = _cargar_costa()
+    tabla_incrementos = at.dataframe[0].value
+    assert len(tabla_incrementos) == 10
+    assert tabla_incrementos['Incremento (m)'].is_monotonic_decreasing
+
+
+def test_costa_tabla_top_ciudades_tiene_10_filas_y_barcelona_primero():
+    at = _cargar_costa()
+    tabla_ciudades = at.dataframe[1].value
+    assert len(tabla_ciudades) == 10
+    assert tabla_ciudades['Municipio'].iloc[0] == 'Barcelona'  # ciudad costera más poblada
+
+
+# --- Página pages/electricity_cost.py (indicador nacional, sin mapas) ---
+
+def test_electricidad_estado_por_defecto():
+    at = _cargar_electricidad()
+    assert len(at.selectbox) == 1
+    assert at.selectbox[0].value == "RCP4.5"
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS)
+def test_electricidad_renderiza_sin_excepciones(escenario):
+    _cargar_electricidad(escenario)
+
+
+@pytest.mark.parametrize("escenario", ESCENARIOS)
+def test_electricidad_tiene_2_metricas_y_1_tabla(escenario):
+    at = _cargar_electricidad(escenario)
+    assert len(at.metric) == 2
+    assert len(at.dataframe) == 1
+    assert len(at.dataframe[0].value) == 2  # una fila por año (2030, 2050)
+
+
 # --- Página de inundación ---
 
 def test_flood_renderiza_con_cada_periodo_de_retorno():
@@ -521,6 +598,12 @@ def _ruta_impacto(año, escenario):
 # sí hereda el hueco de ~88 mancomunidades sin población (igual que heat_mortality_risk).
 MAX_NULOS_ESPERADOS_IMPACTO = MAX_NULOS_ESPERADOS
 
+
+def _ruta_costa(año):
+    return f"coastal_flood/output/municipios_coastal_flood_risk_{año}_lite.geojson"
+
+
+RUTA_ELECTRICIDAD = "electricity/output/electricity_cost.csv"
 
 RUTA_INUNDACION = "flood/output/municipios_inundacion_lite.geojson"
 
@@ -797,6 +880,57 @@ def test_impacto_per_capita_2030_a_2050_es_mayoritariamente_creciente():
             f"{escenario}: solo el {fraccion_positiva:.0%} de los municipios muestra un "
             f"incremento de impacto per cápita 2030->2050 (se esperaba >85%)"
         )
+
+
+@pytest.mark.parametrize("año", AÑOS)
+def test_geojson_costa_existe_y_tiene_las_columnas_esperadas(año):
+    ruta = _ruta_costa(año)
+    assert os.path.exists(ruta), f"Falta {ruta} - ejecuta coastal_flood/2_coastal_flood_risk.py"
+    gdf = gpd.read_file(ruta)
+    for columna in ['NAMEUNIT', 'ine_code', 'sea_level_rise_m', 'geometry']:
+        assert columna in gdf.columns
+
+
+@pytest.mark.parametrize("año", AÑOS)
+def test_costa_solo_municipios_costeros_tienen_dato(año):
+    # Por diseño, el indicador solo se calcula para municipios dentro de ~10km de una
+    # estación de marea (~658 de 8.132) - el resto queda nulo A PROPÓSITO, no por un hueco
+    # de cobertura (ver README, Known limitations).
+    gdf = gpd.read_file(_ruta_costa(año))
+    n_con_dato = int(gdf['sea_level_rise_m'].notna().sum())
+    assert 500 <= n_con_dato <= 900, f"{año}: {n_con_dato} municipios con dato (se esperaban ~658)"
+
+
+def test_costa_2030_a_2050_es_siempre_creciente():
+    # A diferencia de los hazards basados en clima/tiempo (ruidosos), la subida del nivel
+    # del mar es una tendencia suave: se espera que sea creciente en (casi) el 100% de los
+    # municipios costeros, no solo en la mayoría.
+    g30 = gpd.read_file(_ruta_costa(2030)).set_index('ine_code')
+    g50 = gpd.read_file(_ruta_costa(2050)).set_index('ine_code')
+    comunes = g30.index.intersection(g50.index)
+    delta = g50.loc[comunes, 'sea_level_rise_m'] - g30.loc[comunes, 'sea_level_rise_m']
+    delta = delta.dropna()
+    assert (delta > 0).mean() > 0.99
+
+
+def test_geojson_electricidad_existe_y_tiene_las_columnas_esperadas():
+    assert os.path.exists(RUTA_ELECTRICIDAD), f"Falta {RUTA_ELECTRICIDAD} - ejecuta electricity/2_electricity_cost.py"
+    tabla = pd.read_csv(RUTA_ELECTRICIDAD)
+    for columna in ['año', 'escenario', 'demanda_mwh', 'hidro_mwh', 'solar_mwh', 'eolica_mwh', 'nuclear_mwh', 'residual_mwh', 'coste_sistema_eur']:
+        assert columna in tabla.columns
+    assert len(tabla) == 4  # 2 años x 2 escenarios
+
+
+def test_electricidad_coste_no_negativo():
+    tabla = pd.read_csv(RUTA_ELECTRICIDAD)
+    assert (tabla['coste_sistema_eur'] >= 0).all()
+    assert (tabla['residual_mwh'] >= 0).all()
+
+
+def test_electricidad_coste_es_residual_por_precio_ccgt():
+    tabla = pd.read_csv(RUTA_ELECTRICIDAD)
+    esperado = tabla['residual_mwh'] * 90
+    assert (tabla['coste_sistema_eur'] - esperado).abs().max() < 1.0
 
 
 def test_calentamiento_2030_a_2050_es_mayoritariamente_positivo():
